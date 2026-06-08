@@ -1,0 +1,1624 @@
+openapi: 3.1.0
+info:
+  title: Vera API
+  version: 1.0.0
+  description: Sprint 1 and 2 developer contract for Vera foundation scope.
+servers:
+- url: https://api.example.com
+- url: http://localhost:8080
+tags:
+- name: Health
+- name: Auth
+- name: Organizations
+- name: Associations
+- name: Users
+- name: Invitations
+- name: Memberships
+- name: RoleAssignments
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    RequestId:
+      in: header
+      name: X-Request-ID
+      required: false
+      schema:
+        type: string
+      description: Optional client request correlation id.
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Client-generated UUID. Identical requests within 24 hours return
+        the original response without re-executing.
+    Page:
+      in: query
+      name: page
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      in: query
+      name: perPage
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    Search:
+      in: query
+      name: search
+      schema:
+        type: string
+  schemas:
+    Meta:
+      type: object
+      properties:
+        page:
+          type: integer
+        perPage:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+      required:
+      - page
+      - perPage
+      - total
+      - totalPages
+    Links:
+      type: object
+      properties:
+        self:
+          type: string
+        next:
+          type:
+          - string
+          - 'null'
+        prev:
+          type:
+          - string
+          - 'null'
+    FieldError:
+      type: object
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+      required:
+      - field
+      - message
+    StandardErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        code:
+          type: string
+        correlationId:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldError'
+      required:
+      - message
+      - code
+      - correlationId
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+        database:
+          type: string
+        cache:
+          type: string
+      required:
+      - status
+      - database
+      - cache
+    ResolveAuthRequest:
+      type: object
+      properties:
+        token:
+          type: string
+      required:
+      - token
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+      required:
+      - id
+      - name
+    UserSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        entraObjectId:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - invited
+          - disabled
+      required:
+      - id
+      - organizationId
+      - email
+      - status
+    AuthContext:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/UserSummary'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        activeAssociationIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+      required:
+      - user
+      - roles
+      - activeAssociationIds
+    ManagementOrganization:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - status
+      - createdAt
+      - updatedAt
+    CreateManagementOrganizationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 150
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+      required:
+      - name
+    UpdateManagementOrganizationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 150
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+    Association:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        associationType:
+          type: string
+          enum:
+          - hoa
+          - condo
+          - co-op
+          - other
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+          - onboarding
+        city:
+          type: string
+        state:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - organizationId
+      - name
+      - associationType
+      - status
+      - createdAt
+      - updatedAt
+    CreateAssociationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        associationType:
+          type: string
+          enum:
+          - hoa
+          - condo
+          - co-op
+          - other
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+          - onboarding
+        city:
+          type: string
+        state:
+          type: string
+          maxLength: 2
+      required:
+      - organizationId
+      - name
+      - associationType
+    UpdateAssociationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        associationType:
+          type: string
+          enum:
+          - hoa
+          - condo
+          - co-op
+          - other
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+          - onboarding
+        city:
+          type: string
+        state:
+          type: string
+          maxLength: 2
+    CreateUserRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        entraObjectId:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - invited
+          - disabled
+      required:
+      - organizationId
+      - email
+      - firstName
+      - lastName
+    UpdateUserRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - invited
+          - disabled
+    Invitation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        associationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        role:
+          type: string
+        status:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - revoked
+          - expired
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - organizationId
+      - email
+      - role
+      - status
+      - expiresAt
+      - createdAt
+    CreateInvitationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        associationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+      - organizationId
+      - email
+      - role
+      - expiresAt
+    RedeemInvitationRequest:
+      type: object
+      properties:
+        invitationToken:
+          type: string
+      required:
+      - invitationToken
+    Membership:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        associationId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        membershipType:
+          type: string
+          enum:
+          - manager
+          - board
+          - homeowner
+          - resident
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+      required:
+      - id
+      - organizationId
+      - associationId
+      - userId
+      - membershipType
+      - status
+    CreateMembershipRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        associationId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        membershipType:
+          type: string
+          enum:
+          - manager
+          - board
+          - homeowner
+          - resident
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+      required:
+      - organizationId
+      - associationId
+      - userId
+      - membershipType
+    RoleAssignment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        associationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        roleId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - organizationId
+      - userId
+      - roleId
+      - createdAt
+    CreateRoleAssignmentRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        associationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        roleId:
+          type: string
+          format: uuid
+      required:
+      - organizationId
+      - roleId
+paths:
+  /api/v1/health:
+    get:
+      summary: Health check
+      tags:
+      - Health
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Health'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v1/auth/resolve:
+    post:
+      summary: Resolve authenticated user context from Entra token
+      tags:
+      - Auth
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AuthContext'
+                required:
+                - data
+        '401':
+          description: Unknown or invalid user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveAuthRequest'
+  /api/v1/organizations:
+    get:
+      summary: List organizations
+      tags:
+      - Organizations
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ManagementOrganization'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+      - $ref: '#/components/parameters/Search'
+    post:
+      summary: Create organization
+      tags:
+      - Organizations
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ManagementOrganization'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateManagementOrganizationRequest'
+  /api/v1/organizations/{organizationId}:
+    get:
+      summary: Get organization
+      tags:
+      - Organizations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ManagementOrganization'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: organizationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update organization
+      tags:
+      - Organizations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ManagementOrganization'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: organizationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateManagementOrganizationRequest'
+  /api/v1/associations:
+    get:
+      summary: List associations
+      tags:
+      - Associations
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Association'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+      - $ref: '#/components/parameters/Search'
+      - name: organizationId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: status
+        in: query
+        schema:
+          type: string
+      - name: associationType
+        in: query
+        schema:
+          type: string
+    post:
+      summary: Create association
+      tags:
+      - Associations
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Association'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAssociationRequest'
+  /api/v1/associations/{associationId}:
+    get:
+      summary: Get association
+      tags:
+      - Associations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Association'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: associationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update association
+      tags:
+      - Associations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Association'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: associationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAssociationRequest'
+  /api/v1/users:
+    get:
+      summary: List users
+      tags:
+      - Users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSummary'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+      - $ref: '#/components/parameters/Search'
+      - name: organizationId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: associationId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: status
+        in: query
+        schema:
+          type: string
+    post:
+      summary: Create user
+      tags:
+      - Users
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserSummary'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+  /api/v1/users/{userId}:
+    get:
+      summary: Get user
+      tags:
+      - Users
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserSummary'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update user
+      tags:
+      - Users
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserSummary'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+    delete:
+      summary: Soft delete user
+      tags:
+      - Users
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Deleted
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v1/users/invitations:
+    get:
+      summary: List invitations
+      tags:
+      - Invitations
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Invitation'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+      - name: organizationId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: status
+        in: query
+        schema:
+          type: string
+    post:
+      summary: Create invitation
+      tags:
+      - Invitations
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+      responses:
+        '201':
+          description: Created
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Invitation'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v1/users/invitations/{invitationId}/revoke:
+    post:
+      summary: Revoke invitation
+      tags:
+      - Invitations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Invitation'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: invitationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/users/invitations/redeem:
+    post:
+      summary: Redeem invitation
+      tags:
+      - Invitations
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Invitation'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemInvitationRequest'
+  /api/v1/associations/{associationId}/memberships:
+    get:
+      summary: List memberships for an association
+      tags:
+      - Memberships
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Membership'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: associationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+    post:
+      summary: Create association membership
+      tags:
+      - Memberships
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Membership'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: associationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMembershipRequest'
+  /api/v1/associations/{associationId}/memberships/{membershipId}:
+    delete:
+      summary: Deactivate association membership
+      tags:
+      - Memberships
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: associationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: membershipId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Deactivated
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v1/users/{userId}/role-assignments:
+    get:
+      summary: List role assignments for a user
+      tags:
+      - RoleAssignments
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RoleAssignment'
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                  links:
+                    $ref: '#/components/schemas/Links'
+                required:
+                - data
+                - meta
+                - links
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PerPage'
+    post:
+      summary: Assign role to user
+      tags:
+      - RoleAssignments
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RoleAssignment'
+                required:
+                - data
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleAssignmentRequest'
+  /api/v1/users/{userId}/role-assignments/{assignmentId}:
+    delete:
+      summary: Remove role assignment
+      tags:
+      - RoleAssignments
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: assignmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Removed
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
