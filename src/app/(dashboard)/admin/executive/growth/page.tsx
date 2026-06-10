@@ -144,7 +144,8 @@ async function getGrowthData(tenantId: string) {
       .gte('charge_date', yearStart),
     supabase
       .from('manager_performance_metrics')
-      .select('user_id, communities_managed, total_doors, manager:user_profiles(full_name)')
+      // user_profiles has no name columns — names live on the linked contact
+      .select('user_id, communities_managed, total_doors, manager:user_profiles(contact:contacts(first_name, last_name))')
       .eq('tenant_id', tenantId)
       .order('total_doors', { ascending: false })
       .limit(20),
@@ -244,11 +245,18 @@ async function getGrowthData(tenantId: string) {
     .slice(0, 10)
 
   // Manager workload
-  type ManagerRow = { user_id: string; communities_managed: number | null; total_doors: number | null; manager: { full_name: string | null } | null }
-  const workload: ManagerWorkload[] = (managers as ManagerRow[])
-    .filter((m) => m.manager?.full_name)
+  type ManagerRow = {
+    user_id: string
+    communities_managed: number | null
+    total_doors: number | null
+    manager: { contact: { first_name: string | null; last_name: string | null } | null } | null
+  }
+  const workload: ManagerWorkload[] = (managers as unknown as ManagerRow[])
+    .filter((m) => m.manager?.contact?.first_name || m.manager?.contact?.last_name)
     .map((m) => ({
-      name: (m.manager?.full_name ?? 'Unknown').split(' ').slice(0, 2).join(' '),
+      name: [m.manager?.contact?.first_name, m.manager?.contact?.last_name]
+        .filter(Boolean)
+        .join(' ') || 'Unknown',
       communities: m.communities_managed ?? 0,
       doors: m.total_doors ?? 0,
     }))

@@ -28,32 +28,24 @@ function makeRequest(headers: Record<string, string> = {}) {
 }
 
 /**
- * Build a mock fetch implementation that resolves all 12 automation job calls
+ * Build a mock fetch implementation that resolves all automation job calls
  * and optionally the Discord webhook call.
  *
- * The route runs 12 jobs in parallel:
- *   7 operational + 5 intelligence (sales, financial-health, retention, cross-sell, competitive-intel)
+ * The route runs 6 intelligence jobs in parallel:
+ *   sales, financial-health, retention, cross-sell, competitive-intel, notion sync
  */
-const TOTAL_JOBS = 14
+const TOTAL_JOBS = 6
 
 function makeFetchReturns(
   overrides: Partial<Record<string, { ok: boolean; body: unknown }>> = {}
 ) {
   const defaults: Record<string, { ok: boolean; body: unknown }> = {
-    'post-assessments': { ok: true, body: { processed: 0 } },
-    'late-fees': { ok: true, body: { late_fees_applied: 0 } },
-    'payment-plans': { ok: true, body: { processed: 0 } },
-    'collection-escalation': { ok: true, body: { processed: 0 } },
-    'escalate-violations': { ok: true, body: { processed: 0 } },
-    'generate-meeting-packets': { ok: true, body: { generated: 0 } },
-    'generate-recurring-work-orders': { ok: true, body: { generated: 0 } },
     'sales-intelligence': { ok: true, body: { processed: 0 } },
     'financial-health': { ok: true, body: { processed: 0 } },
     'client-retention': { ok: true, body: { processed: 0 } },
     'cross-sell': { ok: true, body: { processed: 0 } },
     'competitive-intel': { ok: true, body: { processed: 0 } },
     'sync-notion-daily': { ok: true, body: { synced: true } },
-    'deliver-managers-reports': { ok: true, body: { delivered: 0 } },
   }
 
   const merged = { ...defaults, ...overrides }
@@ -66,6 +58,7 @@ function makeFetchReturns(
 
     // Match automation job paths
     for (const [path, result] of Object.entries(merged)) {
+      if (!result) continue
       if (url.includes(`/api/automation/${path}`)) {
         return Promise.resolve(
           new Response(JSON.stringify(result.body), {
@@ -135,7 +128,7 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
   // ── Job orchestration ──────────────────────────────────────────────────
 
   describe('job orchestration', () => {
-    it('runs all 12 automation jobs and returns results', async () => {
+    it('runs all 6 intelligence jobs and returns results', async () => {
       const response = await POST(makeRequest())
       const body = await response.json()
 
@@ -146,19 +139,13 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       expect(body.elapsed_ms).toBeTypeOf('number')
       expect(body.run_at).toBeTruthy()
 
-      // All result keys should be present — 7 operational + 5 intelligence
-      expect(body.results.post_assessments).toBeDefined()
-      expect(body.results.late_fees).toBeDefined()
-      expect(body.results.payment_plans).toBeDefined()
-      expect(body.results.collection_escalation).toBeDefined()
-      expect(body.results.violation_escalation).toBeDefined()
-      expect(body.results.meeting_packets).toBeDefined()
-      expect(body.results.recurring_work_orders).toBeDefined()
+      // All intelligence result keys should be present
       expect(body.results.sales_intelligence).toBeDefined()
       expect(body.results.financial_health).toBeDefined()
       expect(body.results.client_retention).toBeDefined()
       expect(body.results.cross_sell).toBeDefined()
       expect(body.results.competitive_intel).toBeDefined()
+      expect(body.results.sync_notion).toBeDefined()
     })
 
     it('forwards automation secret header to each internal call', async () => {
@@ -168,10 +155,10 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
 
       // Filter to only automation job calls (exclude Discord webhook)
       const automationCalls = mockFetch.mock.calls.filter(
-        ([url]: [string]) =>
-          typeof url === 'string' &&
-          url.includes('/api/automation/') &&
-          !url.includes('/run-all')
+        (call: unknown[]) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('/api/automation/') &&
+          !call[0].includes('/run-all')
       )
 
       expect(automationCalls.length).toBe(TOTAL_JOBS)
@@ -187,8 +174,8 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       await POST(makeRequest())
 
       const automationCalls = mockFetch.mock.calls.filter(
-        ([url]: [string]) =>
-          typeof url === 'string' && url.includes('/api/automation/')
+        (call: unknown[]) =>
+          typeof call[0] === 'string' && call[0].includes('/api/automation/')
       )
 
       for (const [url] of automationCalls) {
@@ -203,8 +190,8 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
     it('reports failed jobs in the response', async () => {
       mockFetch.mockImplementation(
         makeFetchReturns({
-          'late-fees': { ok: false, body: { error: 'DB connection failed' } },
-          'payment-plans': { ok: false, body: { error: 'timeout' } },
+          'sales-intelligence': { ok: false, body: { error: 'DB connection failed' } },
+          'financial-health': { ok: false, body: { error: 'timeout' } },
         })
       )
 
@@ -212,15 +199,14 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       const body = await response.json()
 
       expect(response.status).toBe(200) // The orchestrator itself succeeds
-      // 2 explicitly failed + 5 intelligence jobs that hit the fallback (404 with error key)
-      expect(body.failures).toContain('late-fees')
-      expect(body.failures).toContain('payment-plans')
+      expect(body.failures).toContain('sales-intelligence')
+      expect(body.failures).toContain('financial-health')
       expect(body.jobs_failed).toBeGreaterThanOrEqual(2)
     })
 
     it('handles fetch rejections (network errors) gracefully', async () => {
       mockFetch.mockImplementation((url: string) => {
-        if (url.includes('/api/automation/late-fees')) {
+        if (url.includes('/api/automation/sales-intelligence')) {
           return Promise.reject(new Error('ECONNREFUSED'))
         }
         return makeFetchReturns()(url)
@@ -236,7 +222,7 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
     it('continues running other jobs when one job fails', async () => {
       mockFetch.mockImplementation(
         makeFetchReturns({
-          'post-assessments': { ok: false, body: { error: 'Failed' } },
+          'sales-intelligence': { ok: false, body: { error: 'Failed' } },
         })
       )
 
@@ -244,12 +230,12 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       const body = await response.json()
 
       expect(response.status).toBe(200)
-      // All 12 jobs still ran (post-assessments failed, others succeeded)
+      // All jobs still ran (sales-intelligence failed, others succeeded)
       expect(body.jobs_run).toBe(TOTAL_JOBS)
-      expect(body.failures).toContain('post-assessments')
+      expect(body.failures).toContain('sales-intelligence')
       expect(body.jobs_failed).toBeGreaterThanOrEqual(1)
-      expect(body.results.late_fees).toBeDefined()
-      expect(body.results.payment_plans).toBeDefined()
+      expect(body.results.financial_health).toBeDefined()
+      expect(body.results.client_retention).toBeDefined()
     })
   })
 
@@ -265,8 +251,8 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       await POST(makeRequest())
 
       const discordCalls = mockFetch.mock.calls.filter(
-        ([url]: [string]) =>
-          typeof url === 'string' && url.includes('discord.com')
+        (call: unknown[]) =>
+          typeof call[0] === 'string' && call[0].includes('discord.com')
       )
       expect(discordCalls.length).toBe(1)
     })
@@ -278,8 +264,8 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       await POST(makeRequest())
 
       const discordCalls = mockFetch.mock.calls.filter(
-        ([url]: [string]) =>
-          typeof url === 'string' && url.includes('discord.com')
+        (call: unknown[]) =>
+          typeof call[0] === 'string' && call[0].includes('discord.com')
       )
       expect(discordCalls.length).toBe(0)
     })

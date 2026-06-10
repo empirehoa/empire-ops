@@ -27,58 +27,9 @@ interface AgentDefinition {
   description: string
 }
 
+// Intelligence-only repo: core HOA operations agents (assessments, late fees,
+// violations, etc.) live in the Vera platform, not here.
 const AGENT_REGISTRY: AgentDefinition[] = [
-  // Core Operations (7)
-  {
-    name: 'post-assessments',
-    type: 'core',
-    endpoint: '/api/automation/post-assessments',
-    schedule: 'daily',
-    description: 'Monthly assessment billing by billing_day',
-  },
-  {
-    name: 'late-fees',
-    type: 'core',
-    endpoint: '/api/automation/late-fees',
-    schedule: 'daily',
-    description: 'Apply late fees (flat/pct/daily calculation)',
-  },
-  {
-    name: 'payment-plans',
-    type: 'core',
-    endpoint: '/api/automation/payment-plans',
-    schedule: 'daily',
-    description: 'Process payment plan installments',
-  },
-  {
-    name: 'collection-escalation',
-    type: 'core',
-    endpoint: '/api/automation/collection-escalation',
-    schedule: 'daily',
-    description: 'Rule-based collection escalation with 30-day dedup',
-  },
-  {
-    name: 'escalate-violations',
-    type: 'core',
-    endpoint: '/api/automation/escalate-violations',
-    schedule: 'daily',
-    description: 'FL statute violation lifecycle auto-escalation',
-  },
-  {
-    name: 'generate-meeting-packets',
-    type: 'core',
-    endpoint: '/api/automation/generate-meeting-packets',
-    schedule: 'daily',
-    description: 'Board meeting packet generation (14-day lookahead)',
-  },
-  {
-    name: 'generate-recurring-work-orders',
-    type: 'core',
-    endpoint: '/api/automation/generate-recurring-work-orders',
-    schedule: 'daily',
-    description: 'Template-driven recurring work order creation',
-  },
-
   // Intelligence Agents (5)
   {
     name: 'sales-intelligence',

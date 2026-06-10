@@ -2,21 +2,16 @@
  * Automation: Run All
  * POST /api/automation/run-all
  *
- * Convenience endpoint that runs all automation jobs in parallel:
- * 1. Assessment auto-posting (billing_day match)
- * 2. Late fee posting
- * 3. Payment plan installment processing
- * 4. Collection escalation
- * 5. Violation lifecycle auto-escalation
- * 6. Board meeting packet auto-generation (14 days ahead)
- * 7. Recurring work order generation
- * 8. Sales intelligence briefing
- * 9. Financial health analysis
- * 10. Client retention / churn detection
- * 11. Cross-sell opportunity scanning
- * 12. Competitive intelligence / market positioning
- * 13. Notion daily sync
- * 14. Deliver managers reports (monthly email reports)
+ * Convenience endpoint that runs all intelligence jobs in parallel:
+ * 1. Sales intelligence briefing
+ * 2. Financial health analysis
+ * 3. Client retention / churn detection
+ * 4. Cross-sell opportunity scanning
+ * 5. Competitive intelligence / market positioning
+ * 6. Notion daily sync
+ *
+ * Core HOA operations jobs (assessments, late fees, violations, meeting
+ * packets, work orders) run in the Vera platform — not this repo.
  *
  * Protected by AUTOMATION_SECRET header.
  * Posts a Discord alert if any job fails.
@@ -107,36 +102,22 @@ export async function POST(request: NextRequest) {
 
   const startTime = Date.now()
 
+  // Intelligence-only repo: core HOA operations jobs (assessments, late fees,
+  // violations, etc.) run in the Vera platform, not here.
   const [
-    postAssessmentsResult,
-    lateFeesResult,
-    paymentPlansResult,
-    escalationResult,
-    violationEscalationResult,
-    meetingPacketsResult,
-    recurringWorkOrdersResult,
     salesIntelligenceResult,
     financialHealthResult,
     clientRetentionResult,
     crossSellResult,
     competitiveIntelResult,
     syncNotionResult,
-    deliverManagersReportsResult,
   ] = await Promise.allSettled([
-    callAutomation('post-assessments', secret, appUrl),
-    callAutomation('late-fees', secret, appUrl),
-    callAutomation('payment-plans', secret, appUrl),
-    callAutomation('collection-escalation', secret, appUrl),
-    callAutomation('escalate-violations', secret, appUrl),
-    callAutomation('generate-meeting-packets', secret, appUrl),
-    callAutomation('generate-recurring-work-orders', secret, appUrl),
     callAutomation('sales-intelligence', secret, appUrl),
     callAutomation('financial-health', secret, appUrl),
     callAutomation('client-retention', secret, appUrl),
     callAutomation('cross-sell', secret, appUrl),
     callAutomation('competitive-intel', secret, appUrl),
     callAutomation('sync-notion-daily', secret, appUrl),
-    callAutomation('deliver-managers-reports', secret, appUrl),
   ])
 
   const elapsed = Date.now() - startTime
@@ -155,38 +136,22 @@ export async function POST(request: NextRequest) {
   }
 
   const jobResults = {
-    post_assessments: unwrap(postAssessmentsResult),
-    late_fees: unwrap(lateFeesResult),
-    payment_plans: unwrap(paymentPlansResult),
-    collection_escalation: unwrap(escalationResult),
-    violation_escalation: unwrap(violationEscalationResult),
-    meeting_packets: unwrap(meetingPacketsResult),
-    recurring_work_orders: unwrap(recurringWorkOrdersResult),
     sales_intelligence: unwrap(salesIntelligenceResult),
     financial_health: unwrap(financialHealthResult),
     client_retention: unwrap(clientRetentionResult),
     cross_sell: unwrap(crossSellResult),
     competitive_intel: unwrap(competitiveIntelResult),
     sync_notion: unwrap(syncNotionResult),
-    deliver_managers_reports: unwrap(deliverManagersReportsResult),
   }
 
   // Collect failures for Discord alert
   const jobNames: Record<string, PromiseSettledResult<{ ok: boolean; data: unknown; error?: string }>> = {
-    'post-assessments': postAssessmentsResult,
-    'late-fees': lateFeesResult,
-    'payment-plans': paymentPlansResult,
-    'collection-escalation': escalationResult,
-    'escalate-violations': violationEscalationResult,
-    'generate-meeting-packets': meetingPacketsResult,
-    'generate-recurring-work-orders': recurringWorkOrdersResult,
     'sales-intelligence': salesIntelligenceResult,
     'financial-health': financialHealthResult,
     'client-retention': clientRetentionResult,
     'cross-sell': crossSellResult,
     'competitive-intel': competitiveIntelResult,
     'sync-notion-daily': syncNotionResult,
-    'deliver-managers-reports': deliverManagersReportsResult,
   }
 
   const failures = Object.entries(jobNames)
@@ -199,7 +164,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     run_at: new Date().toISOString(),
     elapsed_ms: elapsed,
-    jobs_run: 14,
+    jobs_run: 6,
     jobs_failed: failures.length,
     failures: failures.length > 0 ? failures : undefined,
     results: jobResults,

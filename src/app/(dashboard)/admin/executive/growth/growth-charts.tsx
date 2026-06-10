@@ -307,9 +307,11 @@ export function AgingChart({ data }: { data: AgingBucket[] }) {
                 outerRadius={100}
                 innerRadius={50}
                 paddingAngle={2}
-                label={({ bucket, amount }) =>
-                  `${bucket}: $${(amount / 100_000).toFixed(0)}K`
-                }
+                label={(props) => {
+                  // recharts types label props loosely — payload carries our AgingBucket
+                  const { bucket, amount } = props as unknown as AgingBucket
+                  return `${bucket}: $${(amount / 100_000).toFixed(0)}K`
+                }}
                 labelLine={{ strokeWidth: 1 }}
               >
                 {data.map((entry, index) => (

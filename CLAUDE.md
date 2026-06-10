@@ -15,11 +15,13 @@ JR Riestra — CEO, Riance LLC
 ## What This Repo Contains
 Intelligence-only extraction — no HOA operations (those stay in Vera).
 
-### Automation Agents (14)
+### Automation Agents (6)
 Run daily via Vercel cron at 06:00 UTC (`/api/cron/run-all`):
-- **Core (7):** Assessments, late fees, payment plans, collections, violations, meeting packets, work orders
 - **Intelligence (5):** Sales, financial health, retention, cross-sell, competitive intel
-- **Sync (2):** Notion daily sync, deliver manager reports
+- **Sync (1):** Notion daily sync
+
+Core HOA operations agents (assessments, late fees, violations, meeting
+packets, work orders) run in the Vera platform — not this repo.
 
 ### Executive Dashboards
 - `/admin/executive` — Riance LLC portfolio (4 companies, KPIs, cross-sell, charts)
@@ -29,7 +31,7 @@ Run daily via Vercel cron at 06:00 UTC (`/api/cron/run-all`):
 - `GET /api/admin/intelligence` — Portfolio metrics
 - `GET /api/admin/intelligence/cross-sell` — Opportunity detection
 - `GET /api/admin/intelligence/pricing` — Fee benchmarks
-- `GET /api/admin/agent-status` — All 14 agents status
+- `GET /api/admin/agent-status` — All 6 agents status
 - `GET /api/admin/integration-health` — Integration sync status
 - `POST /api/admin/sync-notion` — Manual Notion sync
 - `POST /api/integrations/hubspot/sync` — HubSpot CRM sync
