@@ -4,7 +4,7 @@
 
 **Goal:** Give every association a place (office, address, coordinates) and a history (one row per day), so the Neighborhood, the map, and the trend views have real data to draw.
 
-**Architecture:** Add one migration (`0002`) with an `offices` table, location and audit columns on `communities`, and a `community_daily_snapshots` table. Geocoding uses the free US Census batch geocoder, run as a step in the daily sync. A pure snapshot builder computes each community's daily row from tables that already exist. Imports move to Supabase Storage signed uploads, so files up to 15 MB stop hitting Vercel's ~4.5 MB request limit.
+**Architecture:** Add one migration (`0004`) with an `offices` table, location and audit columns on `communities`, and a `community_daily_snapshots` table. Geocoding uses the free US Census batch geocoder, run as a step in the daily sync. A pure snapshot builder computes each community's daily row from tables that already exist. Imports move to Supabase Storage signed uploads, so files up to 15 MB stop hitting Vercel's ~4.5 MB request limit.
 
 **Tech Stack:** Next.js 16 route handlers, supabase-js (service role), Vitest, zod 4. No new runtime dependencies.
 
@@ -22,7 +22,7 @@
 
 | File | Responsibility |
 |---|---|
-| `supabase/migrations/0002_places_and_history.sql` | offices, community location and audit columns, daily snapshots, storage bucket |
+| `supabase/migrations/0004_places_and_history.sql` | offices, community location and audit columns, daily snapshots, storage bucket |
 | `src/lib/types/database.ts` | add `OfficeRow`, `CommunityDailySnapshotRow`, new `CommunityRow` columns |
 | `src/lib/integrations/vantaca/kinds.ts` | add `street_address`, `zip`, `office` fields to the communities kind |
 | `src/lib/integrations/vantaca/commit.ts` | resolve `office` text to `office_id`; reset geocode when the address changes |
@@ -40,10 +40,10 @@
 
 ---
 
-### Task 1: Migration 0002
+### Task 1: Migration 0004
 
 **Files:**
-- Create: `supabase/migrations/0002_places_and_history.sql`
+- Create: `supabase/migrations/0004_places_and_history.sql`
 
 - [ ] **Step 1: Write the migration**
 
@@ -114,7 +114,7 @@ Expected: success. Then run the security advisor. Expected: only the "RLS enable
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/0002_places_and_history.sql
+git add supabase/migrations/0004_places_and_history.sql
 git commit -m "feat(db): offices, community locations, daily snapshots, imports bucket"
 ```
 
@@ -1030,7 +1030,7 @@ git commit -m "feat(import): upload through Supabase Storage to lift the 4.5 MB 
 
 ## Done when
 
-- [ ] Migration `0002` applied; advisor clean apart from the intended notice.
+- [ ] Migration `0004` applied; advisor clean apart from the intended notice.
 - [ ] A Vantaca communities import with address and office columns sets `office_id` and queues geocoding.
 - [ ] After one daily run: every non-test community is `matched`, `city_only`, or `no_match`, and none is `pending`.
 - [ ] `community_daily_snapshots` has one row per non-test community for each day the run ran; re-running the same day changes no counts.

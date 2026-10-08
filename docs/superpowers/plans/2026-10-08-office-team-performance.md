@@ -48,7 +48,7 @@ Fee and revenue are not people metrics. They describe contracts, not performance
 
 | File | Responsibility |
 |---|---|
-| `supabase/migrations/0003_performance_weekly.sql` | `performance_weekly` (subject_type office or manager, subject_key, week_start, metrics jsonb, peer_group, community_count, door_count, changes jsonb), unique on (subject_type, subject_key, week_start) |
+| `supabase/migrations/0005_performance_weekly.sql` | `performance_weekly` (subject_type office or manager, subject_key, week_start, metrics jsonb, peer_group, community_count, door_count, changes jsonb), unique on (subject_type, subject_key, week_start) |
 | `src/lib/performance/metrics.ts` | pure: metric definitions (the single source of truth) |
 | `src/lib/performance/rollup.ts` | pure: week of snapshots to one row per subject |
 | `src/lib/performance/peers.ts` | pure: peer groups and percentile bands, with the 4-member minimum |
@@ -116,7 +116,7 @@ export function peerBand(values: Array<number | null>) {
 
 ### Tasks 3–6 (spelled out in full when the gate is met)
 
-3. Migration `0003` and types.
+3. Migration `0005` and types.
 4. `metrics.ts` and `rollup.ts`, with tests for each metric in the table above, including the "denominator changed" week flag.
 5. The Monday automation route, added to `AGENTS` in `src/lib/intelligence/agents.ts` with skip-when-no-history behavior.
 6. Pages:

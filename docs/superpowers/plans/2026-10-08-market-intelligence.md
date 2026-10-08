@@ -31,7 +31,7 @@ Competitors tracked:
 ## Data model
 
 ```sql
--- supabase/migrations/0004_market_facts.sql
+-- supabase/migrations/0006_market_facts.sql
 create table market_facts (
   id            uuid primary key default gen_random_uuid(),
   subject       text not null,             -- e.g. 'FirstService Residential' or 'Florida condo market'
@@ -64,7 +64,7 @@ alter table market_facts enable row level security;
 
 | File | Responsibility |
 |---|---|
-| `supabase/migrations/0004_market_facts.sql` | table above |
+| `supabase/migrations/0006_market_facts.sql` | table above |
 | `src/lib/market/schema.ts` | zod schema mirroring the DB rules, for the importer and the review page |
 | `src/lib/market/dbpr.ts` | pure: parse a DBPR condo CSV into per-county counts |
 | `src/lib/market/sunbiz.ts` | pure: parse Sunbiz fixed-width records; match association names; count by county |
@@ -77,7 +77,7 @@ alter table market_facts enable row level security;
 
 ### Task 1: Migration and zod schema
 
-- [ ] **Step 1:** Write `0004_market_facts.sql` exactly as above and apply it to project `pwbksvynffxuvvlefprm`.
+- [ ] **Step 1:** Write `0006_market_facts.sql` exactly as above and apply it to project `pwbksvynffxuvvlefprm`.
 - [ ] **Step 2: Constraint test.** Through the Supabase MCP `execute_sql`, run these inserts. Each must fail:
 
 ```sql
