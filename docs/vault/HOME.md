@@ -29,7 +29,7 @@ updated: 2026-04-14
 | **Doors (Units)** | 28,391 |
 | **Offices** | 9 (FL) |
 | **Employees** | 63 (EMG) / 90 (Riance total) |
-| **Platform** | Next.js 16 + Supabase + Vercel |
+| **Intelligence app** | Empire Ops (standalone) |
 | **Database Migrations** | 133+ |
 | **API Route Categories** | 60+ |
 | **Automation Agents** | 16 (12 core + 4 intelligence) |
@@ -49,16 +49,9 @@ updated: 2026-04-14
 
 ---
 
-## Platform & Engineering
+## Empire Ops app
 
-| Note | Description |
-|------|-------------|
-| [[Architecture Overview]] | Tech stack, deployment, system design |
-| [[Database Schema]] | Core tables, multi-tenant pattern, 133 migrations |
-| [[API Routes]] | 60+ endpoint categories |
-| [[Automation Agents]] | 16 agents, cron schedules, Discord alerts |
-| [[Integrations]] | Vantaca, HubSpot, QuickBooks, Stripe, Plaid, Twilio, Resend |
-| [[Security]] | RLS, tenant isolation, rate limiting, encryption |
+Setup and architecture live in the repo: `SETUP.md` and `docs/ARCHITECTURE.md`.
 
 ---
 

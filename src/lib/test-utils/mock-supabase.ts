@@ -66,7 +66,7 @@ export interface SupabaseMockKit {
  * ```
  */
 export function createSupabaseMockKit(): SupabaseMockKit {
-  let fromLog: string[] = []
+  const fromLog: string[] = []
   let lastTable = ''
 
   const chain = buildChain()

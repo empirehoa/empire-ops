@@ -1,21 +1,29 @@
+/**
+ * GET /api/health
+ *
+ * Liveness plus Supabase connectivity. The database check is a head-only count
+ * on `companies` with the anon key: RLS returns no rows to anon, so nothing is
+ * exposed, but a successful round trip proves the project is reachable.
+ */
+
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-export const revalidate = 0
+export const dynamic = 'force-dynamic'
+
+type Check = { status: 'ok' | 'error'; latency_ms?: number; detail?: string }
 
 export async function GET() {
   const start = Date.now()
-  const checks: Record<string, { status: 'ok' | 'error'; latency_ms?: number; detail?: string }> = {
-    server: { status: 'ok' },
-  }
+  const checks: Record<string, Check> = { server: { status: 'ok' } }
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   if (url && key) {
     const dbStart = Date.now()
     try {
-      const supabase = createClient(url, key)
-      const { error } = await supabase.from('tenants').select('id', { count: 'exact', head: true })
+      const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+      const { error } = await supabase.from('companies').select('id', { count: 'exact', head: true })
       checks.supabase = {
         status: error ? 'error' : 'ok',
         latency_ms: Date.now() - dbStart,
@@ -29,30 +37,15 @@ export async function GET() {
       }
     }
   } else {
-    checks.supabase = { status: 'error', detail: 'Environment variables not configured' }
+    checks.supabase = { status: 'error', detail: 'NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY not configured' }
   }
 
-  checks.stripe = {
-    status: process.env.STRIPE_SECRET_KEY ? 'ok' : 'error',
-    ...(!process.env.STRIPE_SECRET_KEY ? { detail: 'STRIPE_SECRET_KEY not configured' } : {}),
-  }
-
-  checks.automation = {
-    status: process.env.AUTOMATION_SECRET ? 'ok' : 'error',
-    ...(!process.env.AUTOMATION_SECRET ? { detail: 'AUTOMATION_SECRET not configured' } : {}),
-  }
-
-  checks.sentry = {
-    status: process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN ? 'ok' : 'error',
-    ...(!(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN) ? { detail: 'Sentry DSN not configured' } : {}),
-  }
+  checks.automation = process.env.AUTOMATION_SECRET
+    ? { status: 'ok' }
+    : { status: 'error', detail: 'AUTOMATION_SECRET not configured' }
 
   const statuses = Object.values(checks).map((c) => c.status)
-  const overall = statuses.every((s) => s === 'ok')
-    ? 'ok'
-    : statuses.some((s) => s === 'ok')
-      ? 'degraded'
-      : 'down'
+  const overall = statuses.every((s) => s === 'ok') ? 'ok' : statuses.some((s) => s === 'ok') ? 'degraded' : 'down'
 
   return NextResponse.json(
     {
@@ -63,6 +56,6 @@ export async function GET() {
       response_time_ms: Date.now() - start,
       checks,
     },
-    { status: overall === 'ok' ? 200 : 503 },
+    { status: overall === 'ok' ? 200 : 503, headers: { 'Cache-Control': 'no-store' } },
   )
 }

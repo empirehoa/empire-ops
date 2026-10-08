@@ -1,17 +1,23 @@
 /**
  * Notion Sync Service
  *
- * Pushes Vera intelligence data to a Notion workspace using the Notion API
- * directly via fetch — no npm package required.
+ * Publishes the Empire Ops daily intelligence report to a Notion workspace using
+ * the Notion API directly via fetch (no npm package).
  *
  * Environment variables:
- *   NOTION_API_KEY                — Notion integration token (secret_xxx)
- *   NOTION_WORKSPACE_DATABASE_ID  — Database for intelligence report entries
- *   NOTION_INTELLIGENCE_PAGE_ID   — Parent page for intelligence report pages
+ *   NOTION_API_KEY                Notion integration token (secret_xxx)
+ *   NOTION_WORKSPACE_DATABASE_ID  Database for intelligence report entries
+ *   NOTION_INTELLIGENCE_PAGE_ID   Parent page for intelligence report pages
  *
  * Notion API docs: https://developers.notion.com/reference
- * Rate limit: 3 requests/second — the service enforces per-call throttling.
+ * Rate limit: 3 requests/second; the service throttles every call.
  */
+
+import { agentLabel } from '@/lib/intelligence/agents'
+import { count, formatDateTime, formatDay, formatMonth, pct, usd } from '@/lib/intelligence/format'
+import type { AgentRunSummary } from '@/lib/intelligence/load'
+import { STALE_DEAL_DAYS } from '@/lib/intelligence/pipeline'
+import type { IntelligenceSnapshot } from '@/lib/intelligence/snapshot'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -219,7 +225,7 @@ export function buildTableBlock(
  *   # Heading 1  /  ## Heading 2  /  ### Heading 3
  *   - Bullet list item
  *   1. Numbered list item
- *   > Blockquote / callout
+ *   > Quote
  *   --- (divider)
  *   **bold**, *italic*, `code` (inline annotations)
  *   Plain paragraph
@@ -300,11 +306,8 @@ export function markdownToBlocks(md: string): NotionBlock[] {
     if (quoteMatch) {
       blocks.push({
         object: 'block',
-        type: 'callout',
-        callout: {
-          rich_text: parseInlineFormatting(quoteMatch[1]),
-          icon: { type: 'emoji', emoji: 'ℹ️' },
-        },
+        type: 'quote',
+        quote: { rich_text: parseInlineFormatting(quoteMatch[1]) },
       })
       continue
     }
@@ -392,7 +395,7 @@ export async function createPage(
     properties,
   }
 
-  // Notion only allows 100 children per create call — send first batch inline
+  // Notion allows 100 children per create call; send the first batch inline
   if (content.length > 0) {
     body.children = content.slice(0, MAX_BLOCKS_PER_REQUEST)
   }
@@ -458,558 +461,223 @@ export async function queryDatabase(
   return { results: result.data.results }
 }
 
+
 // =========================================================================
-// Intelligence report upsert
+// Daily report
 // =========================================================================
 
-/**
- * Find an existing page in the intelligence database by its title (date-based).
- * Returns the page ID if found, or null.
- */
-async function findPageByTitle(
-  databaseId: string,
-  title: string
-): Promise<string | null> {
-  const { results } = await queryDatabase(databaseId, {
-    property: 'Name',
-    title: { equals: title },
-  })
-  if (results.length > 0) {
-    return (results[0] as { id: string }).id
-  }
-  return null
+async function findPageByTitle(databaseId: string, title: string): Promise<string | null> {
+  const { results } = await queryDatabase(databaseId, { property: 'Name', title: { equals: title } })
+  return results.length > 0 ? (results[0] as { id: string }).id : null
 }
 
-/**
- * Delete all children blocks from a page (to allow full content replacement).
- */
+/** Delete every child block of a page, following Notion's pagination. */
 async function clearPageContent(pageId: string): Promise<void> {
-  const result = await notionFetch<{ results: { id: string }[] }>(
-    `/blocks/${pageId}/children?page_size=100`,
-    { method: 'GET' }
+  for (;;) {
+    const result = await notionFetch<{ results: { id: string }[]; has_more: boolean }>(
+      `/blocks/${pageId}/children?page_size=100`,
+      { method: 'GET' },
+    )
+    for (const block of result.data.results) {
+      await notionFetch(`/blocks/${block.id}`, { method: 'DELETE' })
+    }
+    if (!result.data.has_more || result.data.results.length === 0) return
+  }
+}
+
+export function notionConfigured(): boolean {
+  return Boolean(
+    process.env.NOTION_API_KEY &&
+      (process.env.NOTION_WORKSPACE_DATABASE_ID || process.env.NOTION_INTELLIGENCE_PAGE_ID),
+  )
+}
+
+const para = (text: string) => markdownToBlocks(text)
+const heading = (text: string) => markdownToBlocks(`## ${text}`)
+const divider: NotionBlock = { object: 'block', type: 'divider', divider: {} }
+
+/** Build the report blocks. Pure, so it can be tested without Notion. */
+export function buildDailyReportBlocks(snapshot: IntelligenceSnapshot, agentRuns: AgentRunSummary[]): NotionBlock[] {
+  const blocks: NotionBlock[] = []
+  blocks.push(
+    ...para(
+      `Generated ${formatDateTime(snapshot.generatedAt)} by Empire Ops. Portfolio figures exclude Vantaca test associations. ` +
+        'Internal drafts for review by the responsible manager or CPA; not accounting or legal advice.',
+    ),
+    divider,
   )
 
-  for (const block of result.data.results) {
-    await notionFetch(`/blocks/${block.id}`, { method: 'DELETE' })
+  // Agent headlines
+  if (agentRuns.length > 0) {
+    blocks.push(...heading('Agent headlines'))
+    blocks.push(
+      buildTableBlock(
+        ['Agent', 'Status', 'Headline', 'Run at'],
+        agentRuns.map((r) => [agentLabel(r.agent), r.status, r.headline ?? r.error ?? '', formatDateTime(r.started_at)]),
+      ),
+    )
   }
-}
 
-// ---------------------------------------------------------------------------
-// Format helpers for intelligence data
-// ---------------------------------------------------------------------------
+  // Company revenue
+  const { window, companies } = snapshot.revenue
+  const connected = new Set(snapshot.sources.qboConnectedCompanyIds)
+  blocks.push(
+    ...heading(`Company revenue, ${formatMonth(window.months[0])} to ${formatMonth(window.months[window.months.length - 1])}`),
+    ...para('From QuickBooks monthly P&L reports. Companies without QuickBooks data are not estimated.'),
+    buildTableBlock(
+      ['Company', 'Revenue', 'Net income', 'Months covered'],
+      companies.map((c) =>
+        c.hasData
+          ? [c.name, usd(c.revenue), usd(c.netIncome), `${c.monthsCovered} of ${c.monthsExpected}`]
+          : [c.name, connected.has(c.companyId) ? 'Connected, no P&L synced yet' : 'QuickBooks not connected', '', ''],
+      ),
+    ),
+  )
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
-function formatPct(value: number): string {
-  return `${value}%`
-}
-
-function buildIntelligenceBlocks(data: Record<string, unknown>): NotionBlock[] {
-  const blocks: NotionBlock[] = []
-  const now = new Date().toISOString()
-
-  // Header
-  blocks.push(...markdownToBlocks(`> Generated at ${now} by Vera Intelligence Engine`))
-  blocks.push({ object: 'block', type: 'divider', divider: {} })
-
-  // --- Portfolio Metrics ---
-  const portfolio = data.portfolio_metrics as Record<string, number> | undefined
-  if (portfolio) {
-    blocks.push(...markdownToBlocks('## Portfolio Metrics'))
+  // Pipeline
+  blocks.push(...heading('Sales pipeline (HubSpot)'))
+  const p = snapshot.pipeline
+  if (!p) {
+    blocks.push(...para('HubSpot is not connected or has not synced. Set HUBSPOT_ACCESS_TOKEN and run a sync from /admin/integrations.'))
+  } else {
     blocks.push(
       buildTableBlock(
         ['Metric', 'Value'],
         [
-          ['Total Associations', String(portfolio.total_associations ?? 0)],
-          ['Active Associations', String(portfolio.active_associations ?? 0)],
-          ['Total Units (Doors)', String(portfolio.total_units ?? 0)],
-          ['Total Contacts', String(portfolio.total_contacts ?? 0)],
-        ]
-      )
+          ['Open deals', count(p.openCount)],
+          ['Open value', usd(p.openValue)],
+          ['Weighted by stage probability', usd(p.weightedValue)],
+          [`Stale (no update in ${STALE_DEAL_DAYS}+ days)`, `${count(p.staleCount)} deals, ${usd(p.staleValue)}`],
+          ['Win rate, trailing 365 days (deals)', pct(p.winRate.byCount)],
+          ['Win rate, trailing 365 days (dollars)', pct(p.winRate.byValue)],
+        ],
+      ),
     )
   }
 
-  // --- Financial Health ---
-  const financial = data.financial_health as Record<string, number> | undefined
-  if (financial) {
-    blocks.push(...markdownToBlocks('## Financial Health'))
+  // Homeowner AR
+  blocks.push(...heading('Homeowner AR across managed associations (Vantaca)'))
+  const ar = snapshot.ar
+  if (!ar) {
+    blocks.push(...para('No Vantaca AR aging imported. Upload the export at /admin/imports.'))
+  } else {
     blocks.push(
+      ...para(
+        `${usd(ar.total)} across ${count(ar.communityCount)} associations; ${pct(ar.share90Plus)} is 90+ days (${usd(ar.days90Plus)}). Latest snapshots ${formatDay(ar.asOfMin)} to ${formatDay(ar.asOfMax)}.`,
+      ),
       buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Total AR', formatCurrency(financial.total_ar ?? 0)],
-          ['Total Delinquent', formatCurrency(financial.total_delinquent ?? 0)],
-          ['Delinquency Rate', formatPct(financial.delinquency_rate ?? 0)],
-          ['Collections Rate', formatPct(financial.collections_rate ?? 0)],
-          ['Monthly Revenue', formatCurrency(financial.monthly_revenue ?? 0)],
-          ['Aging 90+ Days', formatCurrency(financial.aging_90_plus ?? 0)],
-        ]
-      )
+        ['Association', '90+ days', 'Share of its AR', 'Total AR'],
+        ar.topBy90Plus.map((l) => [l.name, usd(l.days90Plus), pct(l.share90Plus), usd(l.total)]),
+      ),
     )
   }
 
-  // --- Compliance Health ---
-  const compliance = data.compliance_health as Record<string, unknown> | undefined
-  if (compliance) {
-    blocks.push(...markdownToBlocks('## Compliance Health'))
+  // Action items
+  blocks.push(...heading('Action item aging (Vantaca)'))
+  const aging = snapshot.aging
+  if (!aging) {
+    blocks.push(...para('No Vantaca action items imported. Upload the export at /admin/imports.'))
+  } else {
+    blocks.push(
+      ...para(`${count(aging.openCount)} open items; ${count(aging.agedCount)} open ${aging.agedThresholdDays}+ days.`),
+      buildTableBlock(
+        ['Category', 'Open', `${aging.agedThresholdDays}+ days`],
+        aging.byCategory.slice(0, 15).map((c) => [c.category, count(c.open), count(c.aged)]),
+      ),
+    )
+  }
+
+  // Retention
+  const retention = snapshot.retention
+  if (retention && retention.scored.some((r) => r.score > 0)) {
+    blocks.push(...heading('Retention risk (heuristic)'), ...para(retention.method))
     blocks.push(
       buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Open Violations', String(compliance.open_violations ?? 0)],
-          ['Total Violations', String(compliance.total_violations ?? 0)],
-          ['Compliance Rate', formatPct(compliance.compliance_rate as number ?? 0)],
-          ['Avg Resolution (days)', String(compliance.avg_resolution_days ?? 0)],
-        ]
-      )
+        ['Association', 'Score', 'Signals'],
+        retention.scored
+          .filter((r) => r.score > 0)
+          .slice(0, 10)
+          .map((r) => [r.name, String(r.score), r.signals.filter((s) => s.points > 0).map((s) => s.explanation).join(' ')]),
+      ),
     )
+  }
 
-    const byCategory = compliance.violations_by_category as Record<string, number> | undefined
-    if (byCategory && Object.keys(byCategory).length > 0) {
-      blocks.push(...markdownToBlocks('### Violations by Category'))
+  // Cross-sell
+  const cs = snapshot.crossSell
+  if (cs) {
+    blocks.push(
+      ...heading('Cross-sell signals'),
+      ...para(`Action items open or opened in the last ${cs.windowDays} days whose category or type matches sister-company work. Leads, not estimates.`),
+      buildTableBlock(
+        ['Company', 'Matches', 'Associations'],
+        cs.byCompany.map((c) => [c.companyName, count(c.matches), count(c.communities)]),
+      ),
+    )
+    if (cs.byCommunity.length > 0) {
       blocks.push(
         buildTableBlock(
-          ['Category', 'Count'],
-          Object.entries(byCategory)
-            .sort(([, a], [, b]) => b - a)
-            .map(([cat, count]) => [cat, String(count)])
-        )
+          ['Association', 'Company', 'Items', 'Keywords'],
+          cs.byCommunity.slice(0, 15).map((m) => [m.name, m.companyName, count(m.count), m.keywords.join(', ')]),
+        ),
       )
     }
   }
 
-  // --- Operational Metrics ---
-  const ops = data.operational_metrics as Record<string, unknown> | undefined
-  if (ops) {
-    blocks.push(...markdownToBlocks('## Operational Metrics'))
+  // Fee per door
+  const pricing = snapshot.pricing
+  if (pricing) {
     blocks.push(
+      ...heading('Fee per door by size (internal)'),
+      ...para(pricing.label),
       buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Open Work Orders', String(ops.open_work_orders ?? 0)],
-          ['Completed Work Orders', String(ops.completed_work_orders ?? 0)],
-          ['Avg Response (days)', String(ops.avg_response_days ?? 0)],
-          ['Maintenance Backlog (30d+)', String(ops.maintenance_backlog ?? 0)],
-        ]
-      )
+        ['Size band', 'Associations', 'Doors', '25th pct', 'Median', '75th pct'],
+        pricing.bands
+          .filter((b) => b.count > 0)
+          .map((b) => [b.label, count(b.count), count(b.doors), usd(b.p25, 2), usd(b.median, 2), usd(b.p75, 2)]),
+      ),
     )
   }
 
-  // --- Client Pipeline ---
-  const pipeline = data.client_pipeline as Record<string, unknown> | undefined
-  if (pipeline) {
-    blocks.push(...markdownToBlocks('## Client Pipeline'))
+  // Workload
+  if (snapshot.workload && snapshot.workload.length > 0) {
     blocks.push(
+      ...heading('Manager workload'),
       buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Active Leads', String(pipeline.active_leads ?? 0)],
-          ['Pipeline Value', formatCurrency(pipeline.pipeline_value as number ?? 0)],
-          ['Won This Month', String(pipeline.won_this_month ?? 0)],
-          ['Conversion Rate', formatPct(pipeline.conversion_rate as number ?? 0)],
-        ]
-      )
-    )
-  }
-
-  // --- Revenue Concentration ---
-  const revenue = data.revenue_concentration as Record<string, unknown> | undefined
-  if (revenue) {
-    blocks.push(...markdownToBlocks('## Revenue Concentration'))
-    blocks.push(
-      ...markdownToBlocks(
-        `- **Top 3 Concentration**: ${formatPct(revenue.top_3_concentration_pct as number ?? 0)}\n` +
-          `- **Total Revenue**: ${formatCurrency(revenue.total_revenue as number ?? 0)}`
-      )
-    )
-
-    const topCommunities = revenue.top_communities as Array<Record<string, unknown>> | undefined
-    if (topCommunities && topCommunities.length > 0) {
-      blocks.push(...markdownToBlocks('### Top Communities by Revenue'))
-      blocks.push(
-        buildTableBlock(
-          ['Community', 'Units', 'Collected', 'Rev/Unit'],
-          topCommunities.slice(0, 10).map((c) => [
-            String(c.name ?? 'Unknown'),
-            String(c.unit_count ?? 0),
-            formatCurrency(c.total_collected as number ?? 0),
-            formatCurrency(c.revenue_per_unit as number ?? 0),
-          ])
-        )
-      )
-    }
-  }
-
-  // --- Churn Risk ---
-  const churnRisk = data.churn_risk as Array<Record<string, unknown>> | undefined
-  if (churnRisk && churnRisk.length > 0) {
-    blocks.push(...markdownToBlocks('## Churn Risk Communities'))
-    blocks.push(
-      ...markdownToBlocks(`> ${churnRisk.length} communities with health score below 60`)
-    )
-    blocks.push(
-      buildTableBlock(
-        ['Community', 'Score', 'Financial', 'Compliance', 'Maintenance', 'Trend'],
-        churnRisk.slice(0, 15).map((c) => [
-          String(c.name ?? 'Unknown'),
-          String(c.overall_score ?? '-'),
-          String(c.financial_score ?? '-'),
-          String(c.compliance_score ?? '-'),
-          String(c.maintenance_score ?? '-'),
-          String(c.score_trend ?? '-'),
-        ])
-      )
-    )
-  }
-
-  // --- Contract Insights ---
-  const contracts = data.contract_insights as Record<string, number> | undefined
-  if (contracts) {
-    blocks.push(...markdownToBlocks('## Contract Insights'))
-    blocks.push(
-      buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Active Contracts', String(contracts.active_contracts ?? 0)],
-          ['Monthly Contracted', formatCurrency(contracts.total_monthly_contracted ?? 0)],
-          ['Annual Contracted', formatCurrency(contracts.total_annual_contracted ?? 0)],
-        ]
-      )
+        ['Manager', 'Associations', 'Doors', 'Open items', '60+ days', '90+ homeowner AR'],
+        snapshot.workload.map((w) => [w.manager, count(w.communities), count(w.doors), count(w.openItems), count(w.agedItems), usd(w.ar90Plus)]),
+      ),
     )
   }
 
   return blocks
-}
-
-function buildCrossSellBlocks(data: Record<string, unknown>): NotionBlock[] {
-  const blocks: NotionBlock[] = []
-
-  blocks.push(...markdownToBlocks('> Cross-sell opportunity analysis across the Riance LLC portfolio'))
-  blocks.push({ object: 'block', type: 'divider', divider: {} })
-
-  const summary = data.summary as Record<string, unknown> | undefined
-  if (summary) {
-    blocks.push(...markdownToBlocks('## Summary'))
-    const byCompany = summary.by_company as Record<string, number> | undefined
-    const byPriority = summary.by_priority as Record<string, number> | undefined
-
-    blocks.push(
-      buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Total Opportunities', String(summary.total_opportunities ?? 0)],
-          ['Total Estimated Value', formatCurrency(summary.total_estimated_value as number ?? 0)],
-          ['WFW Restoration', String(byCompany?.wfw_restoration ?? 0)],
-          ['FixIQ Maintenance', String(byCompany?.fixiq_maintenance ?? 0)],
-          ['Riance Realty', String(byCompany?.riance_realty ?? 0)],
-          ['High Priority', String(byPriority?.high ?? 0)],
-          ['Medium Priority', String(byPriority?.medium ?? 0)],
-          ['Low Priority', String(byPriority?.low ?? 0)],
-        ]
-      )
-    )
-  }
-
-  const opportunities = data.opportunities as Array<Record<string, unknown>> | undefined
-  if (opportunities && opportunities.length > 0) {
-    blocks.push(...markdownToBlocks('## Opportunities'))
-
-    // Group by target company
-    const grouped: Record<string, Array<Record<string, unknown>>> = {}
-    for (const opp of opportunities) {
-      const company = String(opp.target_company ?? 'Other')
-      if (!grouped[company]) grouped[company] = []
-      grouped[company].push(opp)
-    }
-
-    for (const [company, opps] of Object.entries(grouped)) {
-      blocks.push(...markdownToBlocks(`### ${company}`))
-      blocks.push(
-        buildTableBlock(
-          ['Community', 'Title', 'Priority', 'Est. Value'],
-          opps.slice(0, 20).map((o) => [
-            String(o.association_name ?? 'Unknown'),
-            String(o.title ?? '').slice(0, 80),
-            String(o.priority ?? '-'),
-            formatCurrency(o.estimated_value as number ?? 0),
-          ])
-        )
-      )
-    }
-  }
-
-  return blocks
-}
-
-function buildPricingBlocks(data: Record<string, unknown>): NotionBlock[] {
-  const blocks: NotionBlock[] = []
-
-  blocks.push(...markdownToBlocks('> Pricing benchmarks and analysis for the Empire Management portfolio'))
-  blocks.push({ object: 'block', type: 'divider', divider: {} })
-
-  // Portfolio stats
-  const stats = data.portfolio_stats as Record<string, unknown> | undefined
-  if (stats) {
-    blocks.push(...markdownToBlocks('## Portfolio Pricing Summary'))
-    blocks.push(
-      buildTableBlock(
-        ['Metric', 'Value'],
-        [
-          ['Communities Analyzed', String(stats.total_communities_analyzed ?? 0)],
-          ['Total Units', String(stats.total_units ?? 0)],
-          ['Avg Fee/Door', formatCurrency(stats.avg_fee_per_door as number ?? 0)],
-          ['Median Fee/Door', formatCurrency(stats.median_fee_per_door as number ?? 0)],
-          ['Total Monthly Fees', formatCurrency(stats.total_monthly_fees as number ?? 0)],
-          ['Total Annual Fees', formatCurrency(stats.total_annual_fees as number ?? 0)],
-          ['Communities Under-Priced', String(stats.communities_under_priced ?? 0)],
-          ['Under-Priced %', formatPct(stats.under_priced_pct as number ?? 0)],
-          ['Potential Monthly Lift', formatCurrency(stats.potential_monthly_revenue_lift as number ?? 0)],
-          ['Potential Annual Lift', formatCurrency(stats.potential_annual_revenue_lift as number ?? 0)],
-        ]
-      )
-    )
-  }
-
-  // Tier benchmarks
-  const tiers = data.tier_benchmarks as Array<Record<string, unknown>> | undefined
-  if (tiers && tiers.length > 0) {
-    blocks.push(...markdownToBlocks('## Tier Benchmarks'))
-    blocks.push(
-      buildTableBlock(
-        ['Tier', 'Communities', 'Units', 'Avg $/Door', 'Median $/Door', 'Min', 'Max'],
-        tiers.map((t) => [
-          String(t.label ?? t.tier),
-          String(t.community_count ?? 0),
-          String(t.total_units ?? 0),
-          formatCurrency(t.avg_fee_per_door as number ?? 0),
-          formatCurrency(t.median_fee_per_door as number ?? 0),
-          formatCurrency(t.min_fee_per_door as number ?? 0),
-          formatCurrency(t.max_fee_per_door as number ?? 0),
-        ])
-      )
-    )
-  }
-
-  // Under-priced communities
-  const underPriced = data.under_priced_communities as Array<Record<string, unknown>> | undefined
-  if (underPriced && underPriced.length > 0) {
-    blocks.push(...markdownToBlocks('## Under-Priced Communities'))
-    blocks.push(
-      ...markdownToBlocks(`> ${underPriced.length} communities below 75% of their tier median fee/door`)
-    )
-    blocks.push(
-      buildTableBlock(
-        ['Community', 'Units', 'Tier', 'Fee/Door', 'Gap', 'Source'],
-        underPriced.slice(0, 25).map((c) => [
-          String(c.name ?? 'Unknown'),
-          String(c.unit_count ?? 0),
-          String(c.size_tier ?? '-'),
-          formatCurrency(c.fee_per_door as number ?? 0),
-          `+${formatCurrency(c.pricing_gap as number ?? 0)}`,
-          String(c.fee_source ?? '-'),
-        ])
-      )
-    )
-  }
-
-  return blocks
-}
-
-// =========================================================================
-// High-level upsert methods
-// =========================================================================
-
-export type IntelligenceReportData = {
-  intelligence: Record<string, unknown>
-  crossSell?: Record<string, unknown>
-  pricing?: Record<string, unknown>
 }
 
 /**
- * Create or update the daily intelligence report page in Notion.
- *
- * Uses the configured NOTION_WORKSPACE_DATABASE_ID to query for an existing
- * page with today's date as the title. If found, the page content is replaced.
- * If not, a new page is created.
- *
- * Returns a summary of what was synced including page IDs and URLs.
+ * Create or replace today's report page. With NOTION_WORKSPACE_DATABASE_ID the
+ * page is found by its Name title and its content replaced; otherwise a new page
+ * is created under NOTION_INTELLIGENCE_PAGE_ID.
  */
-export async function upsertIntelligenceReport(
-  data: IntelligenceReportData
-): Promise<{
-  pages_synced: string[]
-  intelligence_page: { id: string; url: string } | null
-  cross_sell_page: { id: string; url: string } | null
-  pricing_page: { id: string; url: string } | null
-}> {
+export async function publishDailyReport(
+  snapshot: IntelligenceSnapshot,
+  agentRuns: AgentRunSummary[],
+): Promise<{ id: string; url: string; title: string }> {
   const databaseId = process.env.NOTION_WORKSPACE_DATABASE_ID
   const parentPageId = process.env.NOTION_INTELLIGENCE_PAGE_ID
-
   if (!databaseId && !parentPageId) {
-    throw new Error(
-      'Either NOTION_WORKSPACE_DATABASE_ID or NOTION_INTELLIGENCE_PAGE_ID must be configured'
-    )
+    throw new Error('Either NOTION_WORKSPACE_DATABASE_ID or NOTION_INTELLIGENCE_PAGE_ID must be configured')
   }
 
-  const today = new Date().toISOString().split('T')[0]
-  const pagesSynced: string[] = []
-  let intelligencePage: { id: string; url: string } | null = null
-  let crossSellPage: { id: string; url: string } | null = null
-  let pricingPage: { id: string; url: string } | null = null
-
-  // --- Intelligence Report ---
-  const intelTitle = `Intelligence Report — ${today}`
-  const intelBlocks = buildIntelligenceBlocks(data.intelligence)
-
-  if (databaseId) {
-    const existingId = await findPageByTitle(databaseId, intelTitle)
-    if (existingId) {
-      await clearPageContent(existingId)
-      await appendBlocks(existingId, intelBlocks)
-      await updatePage(existingId, {
-        Name: { title: buildRichText(intelTitle) },
-      })
-      intelligencePage = { id: existingId, url: `https://notion.so/${existingId.replace(/-/g, '')}` }
-    } else {
-      intelligencePage = await createPage(databaseId, intelTitle, intelBlocks, 'database_id')
-    }
-  } else if (parentPageId) {
-    intelligencePage = await createPage(parentPageId, intelTitle, intelBlocks, 'page_id')
-  }
-  pagesSynced.push('intelligence')
-
-  // --- Cross-Sell Report ---
-  if (data.crossSell) {
-    const crossSellTitle = `Cross-Sell Opportunities — ${today}`
-    const crossSellBlocks = buildCrossSellBlocks(data.crossSell)
-
-    if (databaseId) {
-      const existingId = await findPageByTitle(databaseId, crossSellTitle)
-      if (existingId) {
-        await clearPageContent(existingId)
-        await appendBlocks(existingId, crossSellBlocks)
-        crossSellPage = { id: existingId, url: `https://notion.so/${existingId.replace(/-/g, '')}` }
-      } else {
-        crossSellPage = await createPage(databaseId, crossSellTitle, crossSellBlocks, 'database_id')
-      }
-    } else if (parentPageId) {
-      crossSellPage = await createPage(parentPageId, crossSellTitle, crossSellBlocks, 'page_id')
-    }
-    pagesSynced.push('cross_sell')
-  }
-
-  // --- Pricing Report ---
-  if (data.pricing) {
-    const pricingTitle = `Pricing Analysis — ${today}`
-    const pricingBlocks = buildPricingBlocks(data.pricing)
-
-    if (databaseId) {
-      const existingId = await findPageByTitle(databaseId, pricingTitle)
-      if (existingId) {
-        await clearPageContent(existingId)
-        await appendBlocks(existingId, pricingBlocks)
-        pricingPage = { id: existingId, url: `https://notion.so/${existingId.replace(/-/g, '')}` }
-      } else {
-        pricingPage = await createPage(databaseId, pricingTitle, pricingBlocks, 'database_id')
-      }
-    } else if (parentPageId) {
-      pricingPage = await createPage(parentPageId, pricingTitle, pricingBlocks, 'page_id')
-    }
-    pagesSynced.push('pricing')
-  }
-
-  return {
-    pages_synced: pagesSynced,
-    intelligence_page: intelligencePage,
-    cross_sell_page: crossSellPage,
-    pricing_page: pricingPage,
-  }
-}
-
-/**
- * Create or update a named agent report page. Useful for individual automation
- * agents (sales intelligence, financial health, etc.) that want to push their
- * own reports to Notion independently.
- *
- * @param agentName  Human-readable agent name (e.g., "Sales Intelligence").
- * @param data       The raw report data — will be converted to markdown blocks.
- */
-export async function upsertAgentReport(
-  agentName: string,
-  data: Record<string, unknown>
-): Promise<{ id: string; url: string }> {
-  const databaseId = process.env.NOTION_WORKSPACE_DATABASE_ID
-  const parentPageId = process.env.NOTION_INTELLIGENCE_PAGE_ID
-
-  if (!databaseId && !parentPageId) {
-    throw new Error(
-      'Either NOTION_WORKSPACE_DATABASE_ID or NOTION_INTELLIGENCE_PAGE_ID must be configured'
-    )
-  }
-
-  const today = new Date().toISOString().split('T')[0]
-  const title = `${agentName} — ${today}`
-
-  // Build generic blocks from the data payload
-  const blocks: NotionBlock[] = [
-    ...markdownToBlocks(`> Agent report generated at ${new Date().toISOString()}`),
-    { object: 'block', type: 'divider', divider: {} },
-    ...markdownToBlocks(`## ${agentName}`),
-  ]
-
-  // Render each top-level key as a section
-  for (const [key, value] of Object.entries(data)) {
-    const sectionTitle = key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-      // Array of objects -> table
-      const headers = Object.keys(value[0] as Record<string, unknown>)
-      const rows = value.map((item) =>
-        headers.map((h) => String((item as Record<string, unknown>)[h] ?? ''))
-      )
-      blocks.push(...markdownToBlocks(`### ${sectionTitle}`))
-      blocks.push(buildTableBlock(headers, rows.slice(0, 50)))
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Object -> key-value table
-      const entries = Object.entries(value as Record<string, unknown>)
-      blocks.push(...markdownToBlocks(`### ${sectionTitle}`))
-      blocks.push(
-        buildTableBlock(
-          ['Key', 'Value'],
-          entries.map(([k, v]) => [
-            k.replace(/_/g, ' '),
-            typeof v === 'number'
-              ? v > 1000
-                ? formatCurrency(v)
-                : String(v)
-              : String(v ?? '-'),
-          ])
-        )
-      )
-    } else {
-      // Primitive value -> paragraph
-      blocks.push(
-        ...markdownToBlocks(`- **${sectionTitle}**: ${String(value)}`)
-      )
-    }
-  }
+  const title = `Empire Ops daily report ${snapshot.generatedAt.slice(0, 10)}`
+  const blocks = buildDailyReportBlocks(snapshot, agentRuns)
 
   if (databaseId) {
     const existingId = await findPageByTitle(databaseId, title)
     if (existingId) {
       await clearPageContent(existingId)
       await appendBlocks(existingId, blocks)
-      return { id: existingId, url: `https://notion.so/${existingId.replace(/-/g, '')}` }
+      return { id: existingId, url: `https://notion.so/${existingId.replace(/-/g, '')}`, title }
     }
-    return createPage(databaseId, title, blocks, 'database_id')
+    return { ...(await createPage(databaseId, title, blocks, 'database_id')), title }
   }
-
-  return createPage(parentPageId!, title, blocks, 'page_id')
+  return { ...(await createPage(parentPageId!, title, blocks, 'page_id')), title }
 }

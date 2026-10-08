@@ -1,352 +1,200 @@
-// ---------------------------------------------------------------------------
-// HubSpot CRM API Client
-// ---------------------------------------------------------------------------
-// Handles paginated fetches for deals, contacts, and companies with rate
-// limiting (10 req/sec for HubSpot private apps) and proper error handling
-// for 401 (token expired) and 429 (rate limit).
+// HubSpot CRM v3 client (private app token).
+// Reads deals, deal pipelines (for stage/pipeline labels) and owners.
+// The token is only ever placed in the Authorization header; it never
+// appears in error messages or logs.
 
-import { withTimeout } from '@/lib/resilience'
-import type {
-  HubSpotPaginatedResponse,
-  HubSpotDeal,
-  HubSpotContact,
-  HubSpotCompany,
-  HubSpotOwner,
+import {
+  HUBSPOT_DEAL_PROPERTIES,
+  type HubSpotDeal,
+  type HubSpotOwner,
+  type HubSpotPage,
+  type HubSpotPipeline,
 } from './types'
 
-const HUBSPOT_API_BASE = 'https://api.hubapi.com'
+export const HUBSPOT_API_BASE = 'https://api.hubapi.com'
 
-// HubSpot rate limit: 10 requests/second for private apps
-const RATE_LIMIT_WINDOW_MS = 1000
-const RATE_LIMIT_MAX_REQUESTS = 10
-const REQUEST_TIMEOUT_MS = 15_000
-const MAX_PAGE_SIZE = 100 // HubSpot CRM v3 max
+const PAGE_SIZE = 100 // CRM v3 objects maximum
+const OWNERS_PAGE_SIZE = 100
+const REQUEST_TIMEOUT_MS = 20_000
+const MAX_ATTEMPTS = 6
+const MAX_RETRY_WAIT_MS = 60_000
+/** Safety stop for runaway pagination (100 per page => 200k deals). */
+const MAX_PAGES = 2_000
 
-// ---------------------------------------------------------------------------
-// Rate Limiter (sliding window, same pattern as QuickBooks client)
-// ---------------------------------------------------------------------------
+export const HUBSPOT_AUTH_ERROR_MESSAGE =
+  'HubSpot token invalid or missing scopes (crm.objects.deals.read, crm.objects.owners.read)'
 
-class RateLimiter {
-  private timestamps: number[] = []
-  private readonly windowMs: number
-  private readonly maxRequests: number
-
-  constructor(windowMs: number, maxRequests: number) {
-    this.windowMs = windowMs
-    this.maxRequests = maxRequests
-  }
-
-  async acquire(): Promise<void> {
-    const now = Date.now()
-    this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs)
-
-    if (this.timestamps.length >= this.maxRequests) {
-      const oldestInWindow = this.timestamps[0]
-      const waitMs = this.windowMs - (now - oldestInWindow) + 10
-      await new Promise((resolve) => setTimeout(resolve, waitMs))
-      return this.acquire()
-    }
-
-    this.timestamps.push(now)
+export class HubSpotConfigError extends Error {
+  constructor() {
+    super('HUBSPOT_ACCESS_TOKEN is not set')
+    this.name = 'HubSpotConfigError'
   }
 }
-
-const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS)
-
-// ---------------------------------------------------------------------------
-// Error classes
-// ---------------------------------------------------------------------------
 
 export class HubSpotAuthError extends Error {
-  constructor(message: string) {
-    super(message)
+  readonly status: number
+  constructor(status: number) {
+    super(`${HUBSPOT_AUTH_ERROR_MESSAGE} [HTTP ${status}]`)
     this.name = 'HubSpotAuthError'
-  }
-}
-
-export class HubSpotRateLimitError extends Error {
-  public retryAfterMs: number
-  constructor(message: string, retryAfterMs: number) {
-    super(message)
-    this.name = 'HubSpotRateLimitError'
-    this.retryAfterMs = retryAfterMs
+    this.status = status
   }
 }
 
 export class HubSpotApiError extends Error {
-  public status: number
-  constructor(message: string, status: number) {
-    super(message)
+  readonly status: number
+  constructor(status: number, path: string, detail: string) {
+    super(`HubSpot request ${path} failed with HTTP ${status}${detail ? `: ${detail}` : ''}`)
     this.name = 'HubSpotApiError'
     this.status = status
   }
 }
 
-// ---------------------------------------------------------------------------
-// Core fetch helper with rate limiting and retry
-// ---------------------------------------------------------------------------
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
-async function hubspotFetch<T>(
-  accessToken: string,
-  path: string,
-  options: { maxRetries?: number } = {}
-): Promise<T> {
-  const maxRetries = options.maxRetries ?? 3
-  let lastError: Error | null = null
+export type HubSpotClientOptions = {
+  /** Defaults to process.env.HUBSPOT_ACCESS_TOKEN. */
+  accessToken?: string
+  fetchImpl?: FetchLike
+  /** Injected for tests so retries don't actually wait. */
+  sleep?: (ms: number) => Promise<void>
+  baseUrl?: string
+}
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    await rateLimiter.acquire()
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-    const url = `${HUBSPOT_API_BASE}${path}`
-    const response = await withTimeout(
-      fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      }),
-      REQUEST_TIMEOUT_MS,
-      'hubspot-api'
-    )
+export function isHubSpotConfigured(): boolean {
+  return Boolean(process.env.HUBSPOT_ACCESS_TOKEN?.trim())
+}
 
-    // 401: Token is invalid or expired — no point retrying
-    if (response.status === 401) {
-      const body = await response.text().catch(() => 'Unknown error')
-      throw new HubSpotAuthError(
-        `HubSpot authentication failed (401). Token may be expired or revoked. ${body}`
-      )
+/**
+ * Parse a Retry-After header (delta-seconds or HTTP date) into milliseconds.
+ * Returns null when the header is absent or unparseable.
+ */
+export function parseRetryAfter(value: string | null, now: number = Date.now()): number | null {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000)
+  const at = Date.parse(trimmed)
+  if (Number.isNaN(at)) return null
+  return Math.max(0, at - now)
+}
+
+/** Pull a short, safe error description out of a HubSpot error body. */
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const text = await res.text()
+    try {
+      const body = JSON.parse(text) as { message?: unknown; category?: unknown }
+      const parts = [body.category, body.message].filter((p): p is string => typeof p === 'string')
+      if (parts.length) return parts.join(': ').slice(0, 300)
+    } catch {
+      // not JSON
     }
+    return text.slice(0, 200)
+  } catch {
+    return ''
+  }
+}
 
-    // 429: Rate limited — back off and retry
-    if (response.status === 429) {
-      const retryAfter = parseInt(response.headers.get('Retry-After') ?? '1', 10)
-      const retryMs = retryAfter * 1000
-      lastError = new HubSpotRateLimitError(
-        `HubSpot rate limit exceeded (429). Retry after ${retryAfter}s`,
-        retryMs
-      )
-      if (attempt < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, retryMs))
+function backoffMs(attempt: number): number {
+  return Math.min(1000 * 2 ** (attempt - 1), 10_000)
+}
+
+export class HubSpotClient {
+  private readonly token: string
+  private readonly fetchImpl: FetchLike
+  private readonly sleep: (ms: number) => Promise<void>
+  private readonly baseUrl: string
+
+  constructor(options: HubSpotClientOptions = {}) {
+    const token = options.accessToken ?? process.env.HUBSPOT_ACCESS_TOKEN
+    if (!token || !token.trim()) throw new HubSpotConfigError()
+    this.token = token.trim()
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
+    this.sleep = options.sleep ?? defaultSleep
+    this.baseUrl = options.baseUrl ?? HUBSPOT_API_BASE
+  }
+
+  /** GET with 429/5xx backoff (honouring Retry-After) and 401/403 auth errors. */
+  async get<T>(path: string, params: Record<string, string | undefined> = {}): Promise<T> {
+    const url = new URL(path, this.baseUrl)
+    for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, v)
+
+    for (let attempt = 1; ; attempt++) {
+      let res: Response
+      try {
+        res = await this.fetchImpl(url.toString(), {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          cache: 'no-store',
+        })
+      } catch (err) {
+        if (attempt >= MAX_ATTEMPTS) {
+          const reason = err instanceof Error ? err.message : 'network error'
+          throw new HubSpotApiError(0, path, reason)
+        }
+        await this.sleep(backoffMs(attempt))
         continue
       }
-      throw lastError
+
+      if (res.ok) return (await res.json()) as T
+
+      // HubSpot answers 401 for a bad/revoked token and 403 for missing scopes.
+      if (res.status === 401 || res.status === 403) throw new HubSpotAuthError(res.status)
+
+      const retryable = res.status === 429 || res.status >= 500
+      if (retryable && attempt < MAX_ATTEMPTS) {
+        const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get('retry-after')) : null
+        await res.body?.cancel().catch(() => undefined)
+        await this.sleep(Math.min(retryAfter ?? backoffMs(attempt), MAX_RETRY_WAIT_MS))
+        continue
+      }
+
+      throw new HubSpotApiError(res.status, path, await errorDetail(res))
     }
+  }
 
-    // Other non-2xx
-    if (!response.ok) {
-      const body = await response.text().catch(() => 'Unknown error')
-      throw new HubSpotApiError(
-        `HubSpot API error ${response.status}: ${body}`,
-        response.status
-      )
+  /** Every non-archived deal, following paging.next.after until exhausted. */
+  async fetchAllDeals(): Promise<HubSpotDeal[]> {
+    const deals: HubSpotDeal[] = []
+    let after: string | undefined
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const body = await this.get<HubSpotPage<HubSpotDeal>>('/crm/v3/objects/deals', {
+        limit: String(PAGE_SIZE),
+        properties: HUBSPOT_DEAL_PROPERTIES.join(','),
+        archived: 'false',
+        after,
+      })
+      deals.push(...(body.results ?? []))
+      after = body.paging?.next?.after
+      if (!after) return deals
     }
-
-    return (await response.json()) as T
+    throw new HubSpotApiError(0, '/crm/v3/objects/deals', `pagination exceeded ${MAX_PAGES} pages`)
   }
 
-  throw lastError ?? new Error('HubSpot request failed after retries')
-}
-
-// ---------------------------------------------------------------------------
-// Public API: Paginated fetchers
-// ---------------------------------------------------------------------------
-
-/** Properties to request for each object type */
-const DEAL_PROPERTIES = [
-  'dealname',
-  'amount',
-  'dealstage',
-  'pipeline',
-  'closedate',
-  'createdate',
-  'hs_lastmodifieddate',
-  'hubspot_owner_id',
-  'description',
-  'num_associated_contacts',
-]
-
-const CONTACT_PROPERTIES = [
-  'firstname',
-  'lastname',
-  'email',
-  'phone',
-  'jobtitle',
-  'company',
-  'city',
-  'state',
-  'zip',
-  'address',
-  'createdate',
-  'hs_lastmodifieddate',
-  'hubspot_owner_id',
-]
-
-const COMPANY_PROPERTIES = [
-  'name',
-  'domain',
-  'phone',
-  'city',
-  'state',
-  'zip',
-  'address',
-  'numberofemployees',
-  'annualrevenue',
-  'industry',
-  'createdate',
-  'hs_lastmodifieddate',
-  'hubspot_owner_id',
-]
-
-function buildPropertiesQuery(properties: string[]): string {
-  return properties.map((p) => `properties=${encodeURIComponent(p)}`).join('&')
-}
-
-/**
- * Fetch a single page of deals from HubSpot CRM v3.
- * Returns results and optional cursor for next page.
- */
-export async function fetchDeals(
-  accessToken: string,
-  cursor?: string
-): Promise<{ deals: HubSpotDeal[]; nextCursor: string | null }> {
-  const props = buildPropertiesQuery(DEAL_PROPERTIES)
-  let path = `/crm/v3/objects/deals?limit=${MAX_PAGE_SIZE}&${props}`
-  if (cursor) path += `&after=${encodeURIComponent(cursor)}`
-
-  const data = await hubspotFetch<HubSpotPaginatedResponse<HubSpotDeal>>(
-    accessToken,
-    path
-  )
-
-  return {
-    deals: data.results ?? [],
-    nextCursor: data.paging?.next?.after ?? null,
+  /** All deal pipelines with their stages (labels, isClosed, probability). */
+  async fetchDealPipelines(): Promise<HubSpotPipeline[]> {
+    const body = await this.get<{ results: HubSpotPipeline[] }>('/crm/v3/pipelines/deals')
+    return body.results ?? []
   }
-}
 
-/**
- * Fetch ALL deals across all pages.
- */
-export async function fetchAllDeals(
-  accessToken: string
-): Promise<HubSpotDeal[]> {
-  const allDeals: HubSpotDeal[] = []
-  let cursor: string | null = null
-
-  do {
-    const page = await fetchDeals(accessToken, cursor ?? undefined)
-    allDeals.push(...page.deals)
-    cursor = page.nextCursor
-  } while (cursor)
-
-  return allDeals
-}
-
-/**
- * Fetch a single page of contacts from HubSpot CRM v3.
- */
-export async function fetchContacts(
-  accessToken: string,
-  cursor?: string
-): Promise<{ contacts: HubSpotContact[]; nextCursor: string | null }> {
-  const props = buildPropertiesQuery(CONTACT_PROPERTIES)
-  let path = `/crm/v3/objects/contacts?limit=${MAX_PAGE_SIZE}&${props}`
-  if (cursor) path += `&after=${encodeURIComponent(cursor)}`
-
-  const data = await hubspotFetch<HubSpotPaginatedResponse<HubSpotContact>>(
-    accessToken,
-    path
-  )
-
-  return {
-    contacts: data.results ?? [],
-    nextCursor: data.paging?.next?.after ?? null,
+  /** Active and archived owners, so deals owned by former users still get a name. */
+  async fetchOwners(): Promise<HubSpotOwner[]> {
+    const owners: HubSpotOwner[] = []
+    for (const archived of ['false', 'true']) {
+      let after: string | undefined
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const body = await this.get<HubSpotPage<HubSpotOwner>>('/crm/v3/owners', {
+          limit: String(OWNERS_PAGE_SIZE),
+          archived,
+          after,
+        })
+        owners.push(...(body.results ?? []))
+        after = body.paging?.next?.after
+        if (!after) break
+      }
+    }
+    return owners
   }
-}
-
-/**
- * Fetch ALL contacts across all pages.
- */
-export async function fetchAllContacts(
-  accessToken: string
-): Promise<HubSpotContact[]> {
-  const allContacts: HubSpotContact[] = []
-  let cursor: string | null = null
-
-  do {
-    const page = await fetchContacts(accessToken, cursor ?? undefined)
-    allContacts.push(...page.contacts)
-    cursor = page.nextCursor
-  } while (cursor)
-
-  return allContacts
-}
-
-/**
- * Fetch a single page of companies from HubSpot CRM v3.
- */
-export async function fetchCompanies(
-  accessToken: string,
-  cursor?: string
-): Promise<{ companies: HubSpotCompany[]; nextCursor: string | null }> {
-  const props = buildPropertiesQuery(COMPANY_PROPERTIES)
-  let path = `/crm/v3/objects/companies?limit=${MAX_PAGE_SIZE}&${props}`
-  if (cursor) path += `&after=${encodeURIComponent(cursor)}`
-
-  const data = await hubspotFetch<HubSpotPaginatedResponse<HubSpotCompany>>(
-    accessToken,
-    path
-  )
-
-  return {
-    companies: data.results ?? [],
-    nextCursor: data.paging?.next?.after ?? null,
-  }
-}
-
-/**
- * Fetch ALL companies across all pages.
- */
-export async function fetchAllCompanies(
-  accessToken: string
-): Promise<HubSpotCompany[]> {
-  const allCompanies: HubSpotCompany[] = []
-  let cursor: string | null = null
-
-  do {
-    const page = await fetchCompanies(accessToken, cursor ?? undefined)
-    allCompanies.push(...page.companies)
-    cursor = page.nextCursor
-  } while (cursor)
-
-  return allCompanies
-}
-
-/**
- * Fetch HubSpot owners (used to resolve hubspot_owner_id to contact info).
- */
-export async function fetchOwners(
-  accessToken: string
-): Promise<HubSpotOwner[]> {
-  const data = await hubspotFetch<{ results: HubSpotOwner[] }>(
-    accessToken,
-    '/crm/v3/owners?limit=500'
-  )
-  return data.results ?? []
-}
-
-/**
- * Resolve the HubSpot access token from environment.
- * Supports HUBSPOT_ACCESS_TOKEN (preferred) or HUBSPOT_API_KEY (legacy).
- */
-export function getHubSpotAccessToken(): string {
-  const token =
-    process.env.HUBSPOT_ACCESS_TOKEN ?? process.env.HUBSPOT_API_KEY
-  if (!token) {
-    throw new HubSpotAuthError(
-      'HubSpot integration not configured. Set HUBSPOT_ACCESS_TOKEN environment variable.'
-    )
-  }
-  return token
 }

@@ -1,25 +1,21 @@
-export { runHubSpotSync, type HubSpotSyncOptions } from './sync'
+export { syncHubSpotDeals, type HubSpotSyncResult, type HubSpotSyncOptions } from './sync'
 export {
-  fetchDeals,
-  fetchAllDeals,
-  fetchContacts,
-  fetchAllContacts,
-  fetchCompanies,
-  fetchAllCompanies,
-  fetchOwners,
-  getHubSpotAccessToken,
-  HubSpotAuthError,
-  HubSpotRateLimitError,
+  HubSpotClient,
   HubSpotApiError,
+  HubSpotAuthError,
+  HubSpotConfigError,
+  HUBSPOT_AUTH_ERROR_MESSAGE,
+  isHubSpotConfigured,
+  parseRetryAfter,
 } from './client'
 export {
-  mapDealStageToLeadStage,
-  HUBSPOT_STAGE_MAP,
-  type HubSpotDeal,
-  type HubSpotContact,
-  type HubSpotCompany,
-  type HubSpotOwner,
-  type HubSpotSyncEntityType,
-  type HubSpotSyncLogEntry,
-  type HubSpotSyncResult,
-} from './types'
+  buildLookups,
+  dealToRow,
+  parseHubSpotBool,
+  parseHubSpotDate,
+  parseHubSpotMoney,
+  parseHubSpotNumber,
+  parseHubSpotTimestamp,
+  parseProbability,
+} from './map'
+export * from './types'

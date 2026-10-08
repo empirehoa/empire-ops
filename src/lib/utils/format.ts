@@ -24,7 +24,7 @@ export function isNegativeAmount(amount: number | null | undefined): boolean {
 }
 
 /**
- * Format a date in the Vera standard format
+ * Format a date in the Empire Ops standard format
  * Short: Apr 14, 2026
  * Full: April 14, 2026
  */

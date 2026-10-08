@@ -8,127 +8,93 @@ vi.mock('@/lib/auth/automation-secret', () => ({
   verifyAutomationSecret: (...args: unknown[]) => mockVerifyAutomationSecret(...args),
 }))
 
-// ── Mock global fetch (for internal callAutomation calls + Discord) ─────────
+// ── Mock global fetch (sync call, agent calls, Discord) ─────────────────────
 
 const mockFetch = vi.fn()
-
 vi.stubGlobal('fetch', mockFetch)
-
-// ── Import AFTER mocks ─────────────────────────────────────────────────────
 
 const { POST } = await import('@/app/api/automation/run-all/route')
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+const AGENT_PATHS = [
+  'sales-intelligence',
+  'financial-health',
+  'client-retention',
+  'cross-sell',
+  'competitive-intel',
+  'sync-notion-daily',
+]
+const TOTAL_JOBS = AGENT_PATHS.length
+
 function makeRequest(headers: Record<string, string> = {}) {
   return new Request('http://localhost:3000/api/automation/run-all', {
     method: 'POST',
     headers: new Headers(headers),
-  }) as any
+  }) as never
 }
 
-/**
- * Build a mock fetch implementation that resolves all automation job calls
- * and optionally the Discord webhook call.
- *
- * The route runs 6 intelligence jobs in parallel:
- *   sales, financial-health, retention, cross-sell, competitive-intel, notion sync
- */
-const TOTAL_JOBS = 6
+type Reply = { ok: boolean; body: unknown }
 
-function makeFetchReturns(
-  overrides: Partial<Record<string, { ok: boolean; body: unknown }>> = {}
-) {
-  const defaults: Record<string, { ok: boolean; body: unknown }> = {
-    'sales-intelligence': { ok: true, body: { processed: 0 } },
-    'financial-health': { ok: true, body: { processed: 0 } },
-    'client-retention': { ok: true, body: { processed: 0 } },
-    'cross-sell': { ok: true, body: { processed: 0 } },
-    'competitive-intel': { ok: true, body: { processed: 0 } },
-    'sync-notion-daily': { ok: true, body: { synced: true } },
+function makeFetchReturns(overrides: Partial<Record<string, Reply>> = {}) {
+  const defaults: Record<string, Reply> = {
+    'sync/run': { ok: true, body: { hubspot: { rows: 3 } } },
+    ...Object.fromEntries(
+      AGENT_PATHS.map((p) => [p, { ok: true, body: { agent: p, status: 'succeeded', headline: `${p} ok` } }]),
+    ),
   }
-
   const merged = { ...defaults, ...overrides }
 
-  return (url: string, _init?: RequestInit) => {
-    // Discord webhook
-    if (url.includes('discord.com')) {
-      return Promise.resolve(new Response('ok', { status: 200 }))
-    }
-
-    // Match automation job paths
-    for (const [path, result] of Object.entries(merged)) {
-      if (!result) continue
-      if (url.includes(`/api/automation/${path}`)) {
-        return Promise.resolve(
-          new Response(JSON.stringify(result.body), {
-            status: result.ok ? 200 : 500,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        )
-      }
-    }
-
-    // Fallback
+  return (url: string) => {
+    if (url.includes('discord.com')) return Promise.resolve(new Response('ok', { status: 200 }))
+    const key = url.includes('/api/sync/run') ? 'sync/run' : AGENT_PATHS.find((p) => url.endsWith(`/api/automation/${p}`))
+    const reply = key ? merged[key] : undefined
+    if (!reply) return Promise.resolve(new Response(JSON.stringify({ error: 'Not found' }), { status: 404 }))
     return Promise.resolve(
-      new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+      new Response(JSON.stringify(reply.body), {
+        status: reply.ok ? 200 : 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
     )
   }
 }
 
+function calledUrls(): string[] {
+  return mockFetch.mock.calls.map((c: unknown[]) => String(c[0]))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe('Automation Run All — POST /api/automation/run-all', () => {
+describe('POST /api/automation/run-all', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-
     vi.stubEnv('AUTOMATION_SECRET', 'test-automation-secret')
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'http://localhost:3000')
+    vi.stubEnv('DISCORD_WEBHOOK_URL', '')
     vi.stubEnv('DISCORD_AUTOMATION_WEBHOOK_URL', '')
-
     mockVerifyAutomationSecret.mockReturnValue(true)
     mockFetch.mockImplementation(makeFetchReturns())
   })
 
-  // ── Auth ────────────────────────────────────────────────────────────────
-
   describe('authentication', () => {
-    it('returns 401 when automation secret is invalid', async () => {
+    it('returns 401 when the automation secret is invalid', async () => {
       mockVerifyAutomationSecret.mockReturnValue(false)
-
       const response = await POST(makeRequest())
-
       expect(response.status).toBe(401)
-      const body = await response.json()
-      expect(body.error).toBe('Unauthorized')
+      expect((await response.json()).error).toBe('Unauthorized')
+      expect(mockFetch).not.toHaveBeenCalled()
     })
 
-    it('returns 500 when AUTOMATION_SECRET env var is not set', async () => {
+    it('returns 500 when AUTOMATION_SECRET is not set', async () => {
       vi.stubEnv('AUTOMATION_SECRET', '')
-      delete process.env.AUTOMATION_SECRET
-
       const response = await POST(makeRequest())
-
       expect(response.status).toBe(500)
-      const body = await response.json()
-      expect(body.error).toContain('AUTOMATION_SECRET')
-    })
-
-    it('accepts requests with valid automation secret', async () => {
-      mockVerifyAutomationSecret.mockReturnValue(true)
-
-      const response = await POST(
-        makeRequest({ 'x-automation-secret': 'test-automation-secret' })
-      )
-
-      expect(response.status).toBe(200)
+      expect((await response.json()).error).toContain('AUTOMATION_SECRET')
     })
   })
 
-  // ── Job orchestration ──────────────────────────────────────────────────
-
-  describe('job orchestration', () => {
-    it('runs all 6 intelligence jobs and returns results', async () => {
+  describe('orchestration', () => {
+    it('runs the data sync first, then all six agents', async () => {
       const response = await POST(makeRequest())
       const body = await response.json()
 
@@ -136,155 +102,125 @@ describe('Automation Run All — POST /api/automation/run-all', () => {
       expect(body.jobs_run).toBe(TOTAL_JOBS)
       expect(body.jobs_failed).toBe(0)
       expect(body.failures).toBeUndefined()
-      expect(body.elapsed_ms).toBeTypeOf('number')
-      expect(body.run_at).toBeTruthy()
+      expect(body.sync.status).toBe('succeeded')
 
-      // All intelligence result keys should be present
-      expect(body.results.sales_intelligence).toBeDefined()
-      expect(body.results.financial_health).toBeDefined()
-      expect(body.results.client_retention).toBeDefined()
-      expect(body.results.cross_sell).toBeDefined()
-      expect(body.results.competitive_intel).toBeDefined()
-      expect(body.results.sync_notion).toBeDefined()
-    })
-
-    it('forwards automation secret header to each internal call', async () => {
-      mockFetch.mockClear()
-
-      await POST(makeRequest({ 'x-automation-secret': 'test-automation-secret' }))
-
-      // Filter to only automation job calls (exclude Discord webhook)
-      const automationCalls = mockFetch.mock.calls.filter(
-        (call: unknown[]) =>
-          typeof call[0] === 'string' &&
-          call[0].includes('/api/automation/') &&
-          !call[0].includes('/run-all')
-      )
-
-      expect(automationCalls.length).toBe(TOTAL_JOBS)
-
-      for (const [, init] of automationCalls) {
-        expect(init.headers['x-automation-secret']).toBe('test-automation-secret')
+      const urls = calledUrls()
+      expect(urls[0]).toBe('http://localhost:3000/api/sync/run')
+      for (const p of AGENT_PATHS) {
+        expect(urls).toContain(`http://localhost:3000/api/automation/${p}`)
+        expect(body.results[p.replace(/-/g, '_')]).toBeDefined()
       }
+      expect(urls.filter((u) => u.includes('/api/sync/run'))).toHaveLength(1)
     })
 
-    it('uses NEXT_PUBLIC_APP_URL as base URL for internal calls', async () => {
-      vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://vera.example.com')
-
-      await POST(makeRequest())
-
-      const automationCalls = mockFetch.mock.calls.filter(
-        (call: unknown[]) =>
-          typeof call[0] === 'string' && call[0].includes('/api/automation/')
-      )
-
-      for (const [url] of automationCalls) {
-        expect(url).toContain('https://vera.example.com')
-      }
-    })
-  })
-
-  // ── Failure handling ───────────────────────────────────────────────────
-
-  describe('failure handling', () => {
-    it('reports failed jobs in the response', async () => {
-      mockFetch.mockImplementation(
-        makeFetchReturns({
-          'sales-intelligence': { ok: false, body: { error: 'DB connection failed' } },
-          'financial-health': { ok: false, body: { error: 'timeout' } },
-        })
-      )
-
-      const response = await POST(makeRequest())
-      const body = await response.json()
-
-      expect(response.status).toBe(200) // The orchestrator itself succeeds
-      expect(body.failures).toContain('sales-intelligence')
-      expect(body.failures).toContain('financial-health')
-      expect(body.jobs_failed).toBeGreaterThanOrEqual(2)
-    })
-
-    it('handles fetch rejections (network errors) gracefully', async () => {
+    it('waits for the sync to finish before starting agents', async () => {
+      const order: string[] = []
+      let releaseSync: () => void = () => {}
       mockFetch.mockImplementation((url: string) => {
-        if (url.includes('/api/automation/sales-intelligence')) {
-          return Promise.reject(new Error('ECONNREFUSED'))
+        order.push(url.includes('/api/sync/run') ? 'sync-start' : 'agent')
+        if (url.includes('/api/sync/run')) {
+          return new Promise<Response>((resolve) => {
+            releaseSync = () => {
+              order.push('sync-end')
+              resolve(new Response('{}', { status: 200 }))
+            }
+          })
         }
         return makeFetchReturns()(url)
       })
-
-      const response = await POST(makeRequest())
-      const body = await response.json()
-
-      expect(response.status).toBe(200)
-      expect(body.jobs_failed).toBeGreaterThanOrEqual(1)
+      const pending = POST(makeRequest())
+      await new Promise((r) => setTimeout(r, 10))
+      expect(order).toEqual(['sync-start'])
+      releaseSync()
+      await pending
+      expect(order.slice(0, 2)).toEqual(['sync-start', 'sync-end'])
+      expect(order.filter((o) => o === 'agent')).toHaveLength(TOTAL_JOBS)
     })
 
-    it('continues running other jobs when one job fails', async () => {
-      mockFetch.mockImplementation(
-        makeFetchReturns({
-          'sales-intelligence': { ok: false, body: { error: 'Failed' } },
-        })
-      )
+    it('forwards the automation secret to the sync and every agent', async () => {
+      await POST(makeRequest())
+      const internal = mockFetch.mock.calls.filter((c: unknown[]) => !String(c[0]).includes('discord.com'))
+      expect(internal).toHaveLength(TOTAL_JOBS + 1)
+      for (const [, init] of internal) {
+        expect((init as RequestInit & { headers: Record<string, string> }).headers['x-automation-secret']).toBe(
+          'test-automation-secret',
+        )
+      }
+    })
 
-      const response = await POST(makeRequest())
-      const body = await response.json()
-
-      expect(response.status).toBe(200)
-      // All jobs still ran (sales-intelligence failed, others succeeded)
-      expect(body.jobs_run).toBe(TOTAL_JOBS)
-      expect(body.failures).toContain('sales-intelligence')
-      expect(body.jobs_failed).toBeGreaterThanOrEqual(1)
-      expect(body.results.financial_health).toBeDefined()
-      expect(body.results.client_retention).toBeDefined()
+    it('uses NEXT_PUBLIC_APP_URL as the base URL', async () => {
+      vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://ops.example.com')
+      await POST(makeRequest())
+      for (const url of calledUrls()) expect(url.startsWith('https://ops.example.com/')).toBe(true)
     })
   })
 
-  // ── Discord alerts ─────────────────────────────────────────────────────
-
-  describe('discord alerts', () => {
-    it('sends Discord alert when webhook URL is configured', async () => {
-      vi.stubEnv(
-        'DISCORD_AUTOMATION_WEBHOOK_URL',
-        'https://discord.com/api/webhooks/test/test'
-      )
-
-      await POST(makeRequest())
-
-      const discordCalls = mockFetch.mock.calls.filter(
-        (call: unknown[]) =>
-          typeof call[0] === 'string' && call[0].includes('discord.com')
-      )
-      expect(discordCalls.length).toBe(1)
+  describe('failure handling', () => {
+    it('still runs agents when the sync fails, and reports it', async () => {
+      mockFetch.mockImplementation(makeFetchReturns({ 'sync/run': { ok: false, body: { error: 'HubSpot 401' } } }))
+      const body = await (await POST(makeRequest())).json()
+      expect(body.sync.status).toBe('failed')
+      expect(body.jobs_failed).toBe(0)
+      expect(calledUrls().filter((u) => u.includes('/api/automation/'))).toHaveLength(TOTAL_JOBS)
     })
 
-    it('does not send Discord alert when webhook URL is missing', async () => {
-      vi.stubEnv('DISCORD_AUTOMATION_WEBHOOK_URL', '')
-      delete process.env.DISCORD_AUTOMATION_WEBHOOK_URL
-
-      await POST(makeRequest())
-
-      const discordCalls = mockFetch.mock.calls.filter(
-        (call: unknown[]) =>
-          typeof call[0] === 'string' && call[0].includes('discord.com')
+    it('reports failed agents without stopping the others', async () => {
+      mockFetch.mockImplementation(
+        makeFetchReturns({
+          'sales-intelligence': { ok: false, body: { status: 'failed', error: 'DB connection failed' } },
+          'financial-health': { ok: false, body: { error: 'timeout' } },
+        }),
       )
-      expect(discordCalls.length).toBe(0)
-    })
-
-    it('does not fail the response when Discord alert fails', async () => {
-      vi.stubEnv(
-        'DISCORD_AUTOMATION_WEBHOOK_URL',
-        'https://discord.com/api/webhooks/test/test'
-      )
-
-      mockFetch.mockImplementation((url: string, init?: RequestInit) => {
-        if (url.includes('discord.com')) {
-          return Promise.reject(new Error('Discord unreachable'))
-        }
-        return makeFetchReturns()(url, init)
-      })
-
       const response = await POST(makeRequest())
+      const body = await response.json()
+      expect(response.status).toBe(200)
+      expect(body.failures).toEqual(['sales-intelligence', 'financial-health'])
+      expect(body.jobs_failed).toBe(2)
+      expect(body.results.client_retention.status).toBe('succeeded')
+    })
 
+    it('counts skipped agents separately from failures', async () => {
+      mockFetch.mockImplementation(
+        makeFetchReturns({ 'cross-sell': { ok: true, body: { status: 'skipped', headline: 'Skipped: no action items' } } }),
+      )
+      const body = await (await POST(makeRequest())).json()
+      expect(body.jobs_skipped).toBe(1)
+      expect(body.jobs_failed).toBe(0)
+    })
+
+    it('handles network errors on an agent call', async () => {
+      mockFetch.mockImplementation((url: string) =>
+        url.includes('/api/automation/cross-sell') ? Promise.reject(new Error('ECONNREFUSED')) : makeFetchReturns()(url),
+      )
+      const body = await (await POST(makeRequest())).json()
+      expect(body.failures).toEqual(['cross-sell'])
+      expect(body.results.cross_sell.error).toBe('ECONNREFUSED')
+    })
+  })
+
+  describe('discord summary', () => {
+    const discordCalls = () => mockFetch.mock.calls.filter((c: unknown[]) => String(c[0]).includes('discord.com'))
+
+    it('posts exactly one summary when DISCORD_WEBHOOK_URL is set', async () => {
+      vi.stubEnv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/test/test')
+      await POST(makeRequest())
+      expect(discordCalls()).toHaveLength(1)
+      const payload = JSON.parse(String((discordCalls()[0][1] as RequestInit).body))
+      expect(payload.embeds[0].title).toBe('Empire Ops daily run complete')
+      expect(payload.embeds[0].description).toContain('Data sync')
+    })
+
+    it('does not post when DISCORD_WEBHOOK_URL is missing', async () => {
+      await POST(makeRequest())
+      expect(discordCalls()).toHaveLength(0)
+    })
+
+    it('does not fail the run when Discord is unreachable', async () => {
+      vi.stubEnv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/test/test')
+      mockFetch.mockImplementation((url: string) =>
+        url.includes('discord.com') ? Promise.reject(new Error('Discord unreachable')) : makeFetchReturns()(url),
+      )
+      const response = await POST(makeRequest())
       expect(response.status).toBe(200)
     })
   })

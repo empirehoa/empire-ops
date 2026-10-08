@@ -1,26 +1,71 @@
 @import "tailwindcss";
 
+/* Empire Management Group palette (Empire DESIGN.md): navy ink, blue for action,
+   coral reserved for attention. Dark ground #1A1D27. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #F7F8FB;
+  --foreground: #1C244B;
+  --card: #FFFFFF;
+  --card-foreground: #1C244B;
+  --muted: #EEF0F5;
+  --muted-foreground: #5F6679;
+  --primary: #1C74AC;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EEF0F5;
+  --secondary-foreground: #1C244B;
+  --accent: #E8F1F8;
+  --accent-foreground: #1C244B;
+  --destructive: #C0392B;
+  --attention: #C05A2E;
+  --border: rgba(28, 36, 75, 0.12);
+  --ring: #1C74AC;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1A1D27;
+    --foreground: #ECEEF5;
+    --card: #212532;
+    --card-foreground: #ECEEF5;
+    --muted: #262B3A;
+    --muted-foreground: #9AA1B5;
+    --primary: #5FA8D8;
+    --primary-foreground: #0F1320;
+    --secondary: #262B3A;
+    --secondary-foreground: #ECEEF5;
+    --accent: #263243;
+    --accent-foreground: #ECEEF5;
+    --destructive: #F0706A;
+    --attention: #F98761;
+    --border: rgba(255, 255, 255, 0.09);
+    --ring: #5FA8D8;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-attention: var(--attention);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-roboto), Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-mono), "JetBrains Mono", ui-monospace, Menlo, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }
+
+::selection { background: color-mix(in srgb, var(--primary) 22%, transparent); }

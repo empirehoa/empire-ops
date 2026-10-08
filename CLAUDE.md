@@ -1,48 +1,24 @@
-# Empire Ops — Riance LLC Intelligence & Automation Platform
+# Empire Ops
 
-## Project
-Standalone intelligence system extracted from Vera (empirehoa/vera).
-Next.js 16 + TypeScript + Supabase + Vercel
+Standalone operations-intelligence app for Riance LLC (Empire Management Group, Riance Realty,
+Wind Fire & Water, FixIQ). Owner: JR Riestra. Fully independent of the Vera SaaS project
+(Vera is run separately by Amanda's team on Azure): no shared code, database, or auth.
 
-## Owner
-JR Riestra — CEO, Riance LLC
-- Empire Management Group: $7.71M, 63 employees, 255 communities, 28,391 doors
-- Riance Realty: $2.4M, 12 employees
-- Wind Fire & Water (WFW): $890K, 11 employees
-- FixIQ: $340K, 4 employees
-- Total: $11.34M revenue, 90 employees
-
-## What This Repo Contains
-Intelligence-only extraction — no HOA operations (those stay in Vera).
-
-### Automation Agents (6)
-Run daily via Vercel cron at 06:00 UTC (`/api/cron/run-all`):
-- **Intelligence (5):** Sales, financial health, retention, cross-sell, competitive intel
-- **Sync (1):** Notion daily sync
-
-Core HOA operations agents (assessments, late fees, violations, meeting
-packets, work orders) run in the Vera platform — not this repo.
-
-### Executive Dashboards
-- `/admin/executive` — Riance LLC portfolio (4 companies, KPIs, cross-sell, charts)
-- `/admin/executive/growth` — Revenue concentration, pricing, AR aging, expansion markets
-
-### Intelligence APIs
-- `GET /api/admin/intelligence` — Portfolio metrics
-- `GET /api/admin/intelligence/cross-sell` — Opportunity detection
-- `GET /api/admin/intelligence/pricing` — Fee benchmarks
-- `GET /api/admin/agent-status` — All 6 agents status
-- `GET /api/admin/integration-health` — Integration sync status
-- `POST /api/admin/sync-notion` — Manual Notion sync
-- `POST /api/integrations/hubspot/sync` — HubSpot CRM sync
-
-### Knowledge Base
-- `docs/vault/` — 28-note Obsidian vault
-- `graphify-out/` — Codebase knowledge graph
-
-## Brand
-Navy #1C244B | Blue #1C74AC | Coral #F98761
+Stack: Next.js 16 (App Router, `src/proxy.ts` instead of middleware), TypeScript, Supabase
+(own project), Tailwind v4, recharts, Vitest. Read `docs/ARCHITECTURE.md` before changing data
+flow, and `node_modules/next/dist/docs/` before using unfamiliar Next 16 APIs.
 
 ## Rules
-- All Supabase queries MUST include `.eq('tenant_id', tenantId)`
-- `npm run build` must pass before any PR
+- Single organization: no tenant_id. All DB access is server-side via `createAdminClient()`;
+  every table has RLS on with no policies.
+- Admin pages call `requireAdminPage()`, admin APIs call `requireAdminApi()`,
+  scheduled endpoints call `verifyAutomationSecret()`.
+- Never fabricate numbers. If a source isn't connected, the UI and reports say so.
+- Vantaca dummy-data gate: portfolio figures always exclude `communities.is_test`.
+- Treat outputs as drafts for the responsible manager, CPA, or attorney; no legal or
+  accounting advice; collections correspondence goes to counsel.
+- Before a PR: `npm run typecheck && npm test && npm run build`.
+
+## Brand
+Navy #1C244B, Blue #1C74AC (actions), Coral #F98761 (attention only). Poppins for page
+titles, Roboto for everything else. Tokens live in `src/app/globals.css`.
